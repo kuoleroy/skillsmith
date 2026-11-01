@@ -8,12 +8,13 @@
  *    2) makeJunction 用 existsSync 判断存在性，
  *       断链的 junction 被误判成「不存在」→ symlinkSync 撞 EEXIST。
  *
- *  测试方法：
- *    造一个指向「不存在的旧地址」的断链 junction，
- *    然后跑 rebindAll，验证它被摘除并重建到当前真源。
- *
- *  安全性：全程只在本工具的测试目录里造/删链接，
- *          真源 ~/.agents/skills 只读。
+ *  隔离要求（重要）：
+ *    这测试要造 junction、摘 junction，绝不能碰用户真实的端和真源。
+ *    所以全程用临时目录：
+ *      · 真源   → SANDBOX/canon
+ *      · 端目录 → SANDBOX/agent/skills
+ *      · 配置文件（agents.json / settings.json）先备份、测完原样恢复
+ *    在 CI runner 上（没有任何真实端、也没有真源）也能跑。
  */
 'use strict';
 
@@ -21,11 +22,11 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-const SKILL_DIR = __dirname;
-const core = require(path.join(SKILL_DIR, 'core.js'));
-
 const HOME = os.homedir();
 const SANDBOX = path.join(HOME, '.agents', 'skillsmith-test-rebind');
+const CFG_DIR = path.join(HOME, '.agents', 'skillsmith');
+const CFG_FILE = path.join(CFG_DIR, 'agents.json');
+const SET_FILE = path.join(CFG_DIR, 'settings.json');
 
 let pass = 0, fail = 0;
 function check(label, cond, extra) {
@@ -33,76 +34,100 @@ function check(label, cond, extra) {
   else { fail++; console.log('  ✗', label, extra !== undefined ? '→ ' + JSON.stringify(extra) : ''); }
 }
 
-function cleanup() {
-  try { fs.rmSync(SANDBOX, { recursive: true, force: true }); } catch (e) { /* ignore */ }
+// ── 环境备份 / 恢复 ────────────────────────────────────────────
+const backups = {};
+function backupFile(p) {
+  backups[p] = fs.existsSync(p) ? fs.readFileSync(p) : null;
 }
+function restoreFiles() {
+  for (const [p, buf] of Object.entries(backups)) {
+    try {
+      if (buf === null) { if (fs.existsSync(p)) fs.rmSync(p, { force: true }); }
+      else { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, buf); }
+    } catch (e) { /* ignore */ }
+  }
+}
+function rmrf(p) { try { fs.rmSync(p, { recursive: true, force: true }); } catch (e) { /* ignore */ } }
 
-console.log('\n=== 1. 准备：造一个断链的 junction ===');
-cleanup();
-const broken = path.join(SANDBOX, 'agent', 'skills', 'demo-skill');
-fs.mkdirSync(path.dirname(broken), { recursive: true });
-// 指向一个根本不存在的地址
-fs.symlinkSync(path.join(SANDBOX, 'OLD-NONEXISTENT-PATH', 'demo-skill'), broken, 'junction');
-check('断链 junction 已创建', fs.lstatSync(broken).isSymbolicLink());
-check('existsSync 判为不存在（这正是 bug 根源）', !fs.existsSync(broken));
-check('lstat 判为符号链接（修复后靠它识别）', fs.lstatSync(broken).isSymbolicLink());
+backupFile(CFG_FILE);
+backupFile(SET_FILE);
 
-console.log('\n=== 2. makeJunction 能覆盖断链链接（不撞 EEXIST）===');
-const target = path.join(core.canonRoot(), 'score-rewrite');
-const real = fs.existsSync(target);
-let mkErr = null;
+// core/settings 要在改配置之前加载
+const core = require(path.join(__dirname, 'core.js'));
+const settings = require(path.join(__dirname, 'settings.js'));
+
+const OLD_CANON = settings.getCanonRoot();
+
 try {
-  core.makeJunction(target, broken);
-} catch (e) { mkErr = e.message; }
-check('makeJunction 未报 EEXIST', !mkErr, mkErr);
-check('已指向真实存在的真源技能', core.linksToCanon(broken, 'score-rewrite'), real);
-core.removeJunction(broken);
+  // ── 搭隔离环境 ────────────────────────────────────────────────
+  rmrf(SANDBOX);
+  const CANON = path.join(SANDBOX, 'canon');
+  const AGENT_DIR = path.join(SANDBOX, 'agent', 'skills');
+  fs.mkdirSync(path.join(CANON, 'demo-skill'), { recursive: true });
+  fs.writeFileSync(path.join(CANON, 'demo-skill', 'SKILL.md'),
+    '---\nname: demo-skill\ndescription: 测试用技能\n---\n\n正文\n', 'utf8');
+  fs.mkdirSync(AGENT_DIR, { recursive: true });
 
-console.log('\n=== 3. rebindAll 能看见断链项并重绑 ===');
-// 再造一个断链
-fs.symlinkSync(path.join(SANDBOX, 'OLD-NONEXISTENT-PATH', 'demo-skill'), broken, 'junction');
+  // 临时真源 + 临时端
+  settings.setCanonRoot(CANON);
+  core.clearCanonCache();
+  fs.mkdirSync(CFG_DIR, { recursive: true });
+  fs.writeFileSync(CFG_FILE, JSON.stringify({
+    version: 1,
+    agents: [{ id: 'test-agent', name: '测试端', dir: AGENT_DIR, mode: 'junction' }],
+  }, null, 2), 'utf8');
 
-// 用真实的 agent 配置跑一次 dryRun，看它是否把断链项纳入报告
-const agents = core.AGENTS;
-// 找一个真实端（WorkBuddy），造一个指向旧地址的断链技能
-const agentName = Object.keys(agents)[0];
-const cfg = agents[agentName];
-const skill = core.listSkills()[0].name;
-const p = path.join(cfg.dir, skill);
+  console.log('\n=== 0. 隔离环境就绪 ===');
+  check('真源已指向临时目录', core.canonRoot() === CANON, core.canonRoot());
+  check('真源里有 1 个技能', core.listSkills().length === 1, core.listSkills().length);
+  // 注意：AGENTS 是 Proxy，没实现 has trap —— 用 'x' in core.AGENTS 不可靠，
+  //      要用 Object.keys（走 ownKeys trap）。
+  check('生效映射里有测试端',
+    Object.keys(core.AGENTS).includes('测试端'), Object.keys(core.AGENTS));
 
-// 记下原状，测完要原样恢复 —— 测试不该留下痕迹
-const wasLink = core.isJunction(p);
-const wasTarget = wasLink ? (() => {
-  try { return fs.readlinkSync(p); } catch (e) { return null; }
-})() : null;
+  const skill = core.listSkills()[0].name;
+  const p = path.join(AGENT_DIR, skill);
 
-// 先摘掉它（如果存在），造一个断链版本
-if (wasLink) core.removeJunction(p);
-const oldTarget = path.join(SANDBOX, 'OLD-NONEXISTENT-PATH', skill);
-fs.mkdirSync(path.dirname(p), { recursive: true });
-fs.symlinkSync(oldTarget, p, 'junction');
-check('已造出断链：' + agentName + '/' + skill, fs.lstatSync(p).isSymbolicLink() && !fs.existsSync(p));
+  console.log('\n=== 1. 造一个断链的 junction ===');
+  fs.symlinkSync(path.join(SANDBOX, 'OLD-NONEXISTENT-PATH', skill), p, 'junction');
+  check('断链 junction 已创建', fs.lstatSync(p).isSymbolicLink());
+  check('existsSync 判为不存在（这正是 bug 根源）', !fs.existsSync(p));
+  check('lstat 判为符号链接（修复后靠它识别）', fs.lstatSync(p).isSymbolicLink());
 
-const dry = core.rebindAll({ dryRun: true, missing: 'keep' });
-const item = dry.report.find(r => r.agent === agentName && r.skill === skill);
-check('dryRun 报告里包含这个断链项', !!item, dry.report.length);
-check('dryRun 判定为需要 rebind', item && item.action === 'rebind', item);
+  console.log('\n=== 2. makeJunction 能覆盖断链链接（不撞 EEXIST）===');
+  let mkErr = null;
+  try {
+    core.makeJunction(path.join(CANON, skill), p);
+  } catch (e) { mkErr = e.message; }
+  check('makeJunction 未报 EEXIST', !mkErr, mkErr);
+  check('已指向真源', core.linksToCanon(p, skill));
 
-const real2 = core.rebindAll({ dryRun: false, missing: 'keep' });
-const item2 = real2.report.find(r => r.agent === agentName && r.skill === skill);
-check('正式重绑后已指向当前真源',
-  core.linksToCanon(p, skill), item2);
-check('真源内容完好', fs.existsSync(path.join(core.canonRoot(), skill)));
+  console.log('\n=== 3. rebindAll 能看见断链项并重绑 ===');
+  core.removeJunction(p);
+  fs.symlinkSync(path.join(SANDBOX, 'OLD-NONEXISTENT-PATH', skill), p, 'junction');
+  check('已造出断链', fs.lstatSync(p).isSymbolicLink() && !fs.existsSync(p));
 
-console.log('\n=== 4. 还原原状 ===');
-// 恢复成测试前的样子（原来是指向真源的 junction，就恢复成那样）
-if (core.isJunction(p)) core.removeJunction(p);
-if (wasLink) {
-  core.makeJunction(wasTarget || path.join(core.canonRoot(), skill), p);
-  check('已恢复为测试前的链接', core.linksToCanon(p, skill));
-} else {
-  check('测试前不是链接，保持不存在', !fs.existsSync(p));
+  const dry = core.rebindAll({ dryRun: true, missing: 'keep' });
+  const item = dry.report.find(r => r.agent === '测试端' && r.skill === skill);
+  check('dryRun 报告里包含这个断链项', !!item, dry.report.length);
+  check('dryRun 判定为需要 rebind', item && item.action === 'rebind', item);
+
+  const real = core.rebindAll({ dryRun: false, missing: 'keep' });
+  const item2 = real.report.find(r => r.agent === '测试端' && r.skill === skill);
+  check('正式重绑后已指向当前真源', core.linksToCanon(p, skill), item2);
+  check('真源内容完好', fs.existsSync(path.join(CANON, skill, 'SKILL.md')));
+} catch (e) {
+  fail++;
+  console.error('\n✗ 测试异常：', e && e.message);
+} finally {
+  // ── 还原 ──────────────────────────────────────────────────────
+  console.log('\n=== 5. 还原环境 ===');
+  restoreFiles();
+  settings.setCanonRoot(OLD_CANON);
+  core.clearCanonCache();
+  rmrf(SANDBOX);
+  check('真源地址已还原', settings.getCanonRoot() === OLD_CANON, settings.getCanonRoot());
 }
-cleanup();
+
 console.log(`\n结果：${pass} 通过, ${fail} 失败\n`);
 process.exit(fail ? 1 : 0);
