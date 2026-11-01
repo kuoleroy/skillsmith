@@ -26,7 +26,7 @@
 ```bash
 cd electron
 npm ci              # postinstall 会自动下载 Electron 运行时（~250MB）
-npm run dist        # 产物：dist/Skillsmith Setup 1.0.0.exe
+npm run dist        # 产物：dist/Skillsmith-1.0.1-setup.exe
 ```
 
 > Electron 37+ 不再自带 `postinstall`，运行时下载要自己触发。
@@ -69,7 +69,7 @@ npm run dist        # 产物：dist/Skillsmith Setup 1.0.0.exe
 推 tag（`v*`）会让 GitHub Actions 自动构建并发布 Release：
 
 ```bash
-git tag v1.0.0 && git push origin v1.0.0
+git tag v1.0.1 && git push origin v1.0.1
 ```
 
 ---
@@ -262,7 +262,7 @@ skillsmith/            ← 仓库根就是软件本体
 
 ```bash
 cd electron
-npm run dist        # 产物：dist/Skillsmith Setup 1.0.0.exe
+npm run dist        # 产物：dist/Skillsmith-1.0.1-setup.exe
 ```
 
 用 NSIS 打包，安装后自带桌面快捷方式，不需要 Node 环境。
