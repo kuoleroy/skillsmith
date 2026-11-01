@@ -1,8 +1,11 @@
 # Skillsmith —— 智能体技能管理软件
 
 控制各家 AI 工具（WorkBuddy / Claude Code / Trae / CodeArts / Qoder …）共享技能的
-**开关状态**。真源只有一个：`~/.agents/skills`，本工具只负责在各端「装上 / 摘掉」，
-**从不删除真源内容**。
+**开关状态**。真源只有一个（默认 `~/.agents/skills`，地址可在设置里改），
+本工具只负责在各端「装上 / 摘掉」，**从不删除真源内容**。
+
+> 本仓库是**独立的通用软件**，与任何具体技能无关 —— 它只管「技能的开关」。
+> 真源里的技能由各自的仓库维护，本工具不碰它们的内容。
 
 > 英文名取自 smith（锻造者/工匠）—— 管理技能的匠人；中文副标题「智能体技能管理软件」。
 
@@ -12,7 +15,7 @@
 
 ## ⬇️ 下载
 
-**[Releases](../../releases)** 页面有打包好的 Windows 安装包（NSIS，双击即用，
+**[Releases](https://github.com/kuoleroy/skillsmith/releases)** 页面有打包好的 Windows 安装包（NSIS，双击即用，
 不需要装 Node）。
 
 > 安装包**未做代码签名**（没有证书），Windows SmartScreen 可能提示"未知发布者"，
@@ -229,7 +232,7 @@ CodeArts 是特例：它用 `readdir` 过滤掉符号链接，**只认真实目�
 ## 目录结构
 
 ```
-skillsmith/
+skillsmith/            ← 仓库根就是软件本体
 ├── core.js              核心逻辑：junction 判定、增删、真源保护、重新绑定
 ├── agent-config.js      智能体配置：内置基线 + 用户增删改合并
 ├── settings.js          全局设置：共享技能真源地址

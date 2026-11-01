@@ -1,0 +1,23 @@
+__pycache__/
+*.pyc
+*.tmp
+*.zip
+.DS_Store
+Thumbs.db
+
+# node_modules 有 464MB（Electron 运行时在内），dist 有 474MB，
+# 都不能进版本库 —— 源码提交，依赖用 npm install 还原，产物用 npm run dist 重建。
+electron/node_modules/
+electron/dist/
+electron/app/
+electron/build/
+electron/*.log
+
+# 备份与临时文件
+*.bak
+*.orig
+*.old
+*.rej
+
+# Skillsmith 桌面调试截图（临时产物）
+electron/*.png
