@@ -315,7 +315,9 @@ let _lastLedgerDetail = '';
 
 function setStatus(cfg, skillName, disabled) {
   if (!cfg.statusFile) return false;
-  const r = clientState.writeLedger(cfg, ledgerKeys(skillName), disabled);
+  // 第三个参数传目录名：kv_lines / json_array 两类端记的是目录名，
+  // 不能拿候选 key 的末项冒充（那可能是中文名）。
+  const r = clientState.writeLedger(cfg, ledgerKeys(skillName), disabled, skillName);
   _lastLedgerDetail = r.detail;
   return r.changed;
 }

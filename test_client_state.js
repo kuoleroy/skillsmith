@@ -115,11 +115,20 @@ check('写启用后能读回 false', () => {
 
 check('保留文件里的其它行', () => {
   const f = sandboxFile('kv/c.txt', 'alpha=true\nbeta=false\n');
-  cs.writeLedger(kvCfg(f), ['gamma'], true);
+  cs.writeLedger(kvCfg(f), ['gamma'], true, 'gamma');
   const text = fs.readFileSync(f, 'utf8');
   assert.ok(text.includes('alpha=true'), 'alpha 行应保留');
   assert.ok(text.includes('beta=false'), 'beta 行应保留');
   assert.ok(text.includes('gamma=false'), 'gamma 应被追加');
+});
+
+check('新建行用目录名，不用候选里的中文名', () => {
+  // kv_lines 端（CodeArts）记的是目录名；传了 dirName 就必须用它
+  const f = sandboxFile('kv/e.txt', 'alpha=true\n');
+  cs.writeLedger(kvCfg(f), ['dir-name', '中文名'], true, 'dir-name');
+  const text = fs.readFileSync(f, 'utf8');
+  assert.ok(text.includes('dir-name=false'), '应写目录名');
+  assert.ok(!text.includes('中文名'), '不能写中文名');
 });
 
 check('已一致时不写盘（mtime 不变）', () => {
@@ -280,6 +289,17 @@ check('文件不存在时创建', () => {
   assert.strictEqual(r.changed, true);
   const d = JSON.parse(fs.readFileSync(f, 'utf8'));
   assert.strictEqual(d.skillOverrides.foo, 'off');
+});
+
+check('新建记录用 frontmatter name（候选首位），不用中文名', () => {
+  // 实测踩过的 bug：parallel-agents 的候选 key 是
+  // ['parallel-agents', '并行智能体编排']，早先取末项写进了中文名，
+  // 而客户端按 frontmatter name 查 → 查不到 → 技能仍被当成开启。
+  const f = sandboxFile('map/g.json', JSON.stringify({ skillOverrides: {} }));
+  cs.writeLedger(mapCfg(f), ['parallel-agents', '并行智能体编排'], true);
+  const d = JSON.parse(fs.readFileSync(f, 'utf8'));
+  assert.deepStrictEqual(Object.keys(d.skillOverrides), ['parallel-agents']);
+  assert.strictEqual(cs.readLedger(mapCfg(f), ['parallel-agents']).disabled, true);
 });
 
 // ---------------------------------------------------------------- 5. 边界

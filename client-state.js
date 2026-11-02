@@ -296,26 +296,43 @@ function parseKvLines(raw) {
  * 把某端某技能在账本里标记为「开」或「关」。
  *
  * @param {object} cfg
- * @param {string[]} keys    候选 key
- * @param {boolean} disabled true=关, false=开
+ * @param {string[]} keys     候选 key（按客户端解析优先级排序）
+ * @param {boolean} disabled  true=关, false=开
+ * @param {string} [dirName]  技能目录名。新建记录时用得着：
+ *                            kv_lines / json_array 两类端记的是目录名，
+ *                            而 json_map 端（WorkBuddy）记的是 frontmatter name。
+ *                            不能拿 keys 的最后一项冒充目录名 —— 候选列表
+ *                            去重后最后一项可能是 name_cn（中文名），
+ *                            写进去客户端按 name 查不到，等于没关。
  * @returns {{ changed: boolean, key: string|null, detail: string }}
  */
-function writeLedger(cfg, keys, disabled) {
+function writeLedger(cfg, keys, disabled, dirName) {
   if (!cfg || !cfg.statusFile) {
     return { changed: false, key: null, detail: '该端没有独立账本' };
   }
   const file = expandHome(cfg.statusFile);
   const raw = readRaw(file);
 
-  if (cfg.statusKind === 'kv_lines') return writeKvLines(file, raw, keys, disabled);
-  if (cfg.statusKind === 'json_array') return writeJsonArray(file, raw, cfg, keys, disabled);
-  if (cfg.statusKind === 'json_map') return writeJsonMap(file, raw, cfg, keys, disabled);
+  if (cfg.statusKind === 'kv_lines') {
+    return writeKvLines(file, raw, keys, disabled, dirName);
+  }
+  if (cfg.statusKind === 'json_array') {
+    return writeJsonArray(file, raw, cfg, keys, disabled, dirName);
+  }
+  if (cfg.statusKind === 'json_map') {
+    return writeJsonMap(file, raw, cfg, keys, disabled);
+  }
 
   return { changed: false, key: null, detail: `未知账本格式：${cfg.statusKind}` };
 }
 
+/** 新建记录该用哪个 key（各端约定不同，见 writeLedger 注释） */
+function newKeyFor(keys, dirName) {
+  return dirName || keys[keys.length - 1] || keys[0] || null;
+}
+
 /** kv_lines：写 key=false / key=true */
-function writeKvLines(file, raw, keys, disabled) {
+function writeKvLines(file, raw, keys, disabled, dirName) {
   const text = raw === null ? '' : raw;
   const lines = text.split(/\r?\n/);
   const want = disabled ? 'false' : 'true';
@@ -346,7 +363,7 @@ function writeKvLines(file, raw, keys, disabled) {
     lines[hit] = `${left}=${want}`;
   } else if (disabled) {
     // 只有「关」才需要新增一行；「开」而本来没有记录 = 本来就是开的
-    lines.push(`${keys[keys.length - 1] || keys[0]}=false`);
+    lines.push(`${newKeyFor(keys, dirName)}=false`);
   } else {
     return { changed: false, key: keys[0] || null, detail: '账本无记录，视为已开启' };
   }
@@ -358,7 +375,7 @@ function writeKvLines(file, raw, keys, disabled) {
 }
 
 /** json_array：元素出现 = 禁用 */
-function writeJsonArray(file, raw, cfg, keys, disabled) {
+function writeJsonArray(file, raw, cfg, keys, disabled, dirName) {
   const data = raw === null ? {} : parseJsonStrict(file, raw);
   const cur = Array.isArray(data[cfg.statusKey]) ? data[cfg.statusKey].slice() : [];
   const pool = cur.map((x) => String(x).toLowerCase());
@@ -368,7 +385,7 @@ function writeJsonArray(file, raw, cfg, keys, disabled) {
     if (keys.some((k) => pool.includes(k.toLowerCase()))) {
       return { changed: false, key: keys[0] || null, detail: '账本状态已一致' };
     }
-    const key = keys[keys.length - 1] || keys[0];
+    const key = newKeyFor(keys, dirName);
     cur.push(key);
     data[cfg.statusKey] = cur;
     backupBeforeWrite(file, raw);
@@ -389,8 +406,13 @@ function writeJsonArray(file, raw, cfg, keys, disabled) {
 /**
  * json_map：map[key]=标记 表示禁用；启用 = 删 key。
  *
+ * 新建记录用 keys[0]（frontmatter 的 name），不用候选列表末尾。
+ * 原因：WorkBuddy 读账本时按「frontmatter name → 相对路径 → 目录名」解析，
+ * 写 name_cn 它查不到，技能会被当成仍然开启 —— 等于开关失效（实测踩过：
+ * parallel-agents 被写成了「并行智能体编排」，客户端读 name=parallel-agents 读不到）。
+ *
  * 写「关」时用哪个值：
- *   优先 cfg.offValue（默认 off = 完全关闭），不用 user-invocable-only。
+ *   用 cfg.offValue（默认 off = 完全关闭），不用 user-invocable-only。
  *   区别：user-invocable-only 只是「模型不自动调用，用户仍可手动 @」，
  *         off 才是真正关掉。Skillsmith 的语义是「关掉」，所以用 off。
  */
@@ -407,7 +429,8 @@ function writeJsonMap(file, raw, cfg, keys, disabled) {
       (k) => keys.some((x) => x.toLowerCase() === k.toLowerCase())
     );
     const offValue = cfg.offValue || 'off';
-    const key = existing || keys[keys.length - 1] || keys[0];
+    // 新建时用最高优先级的 key（frontmatter name），客户端才认
+    const key = existing || keys[0];
 
     if (existing && String(map[existing]).toLowerCase() === String(offValue).toLowerCase()) {
       return { changed: false, key: existing, detail: '账本状态已一致' };
