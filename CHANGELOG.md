@@ -2,6 +2,37 @@
 
 Skillsmith 的版本记录。Release 正文默认取这里对应版本的段落。
 
+## 未发布
+
+**v1.1.0 — 与客户端真正联通（账本同步）**
+
+这一版修的是本工具最根本的一个缺陷：**开关只生效了一半**。
+
+过去的开关只动目录层（摘 junction / 删真实副本），但部分客户端除目录之外
+还在自己的配置里另记一份「哪些技能被关掉过」。目录已经就位、客户端账本还记着
+禁用时，客户端仍把它当关的 —— 表现就是「在本工具里开了，还得去客户端再开一遍」。
+这是双份记账，不是单一真源。
+
+本版新增：
+
+- `client-state.js` —— 客户端账本适配层，统一三种账本格式：
+  - `kv_lines`：CodeArts 的 `UserSkillStatus.txt`
+  - `json_array`：Trae 的 `skill-config.json → disabledSkills`
+  - `json_map`：WorkBuddy 的 `settings.json → skillOverrides`（开=删记录）
+- WorkBuddy 与 WorkBuddy 国际版接入账本同步（此前完全没接）
+- `core.verifyLedger()` + `GET /api/verify` —— 一致性自检：
+  报告「目录已就位但客户端账本仍禁用」这类静默不一致
+- `align-ledger.js` —— 以目录为准对齐客户端账本，默认 dry-run
+- `verify-real-sync.js` —— 真实环境联通性验证：开关各一轮并断言两层同步
+- `enable`/`disable` 的返回值区分「目录动了没」与「账本动了没」，
+  便于排查「为什么客户端还是不生效」
+
+安全约定（写的是用户真实配置，必须克制）：JSON 解析失败时**拒绝写入**
+而不是重建；写盘前备份到 `~/.agents/skillsmith/backups/`；先写临时文件再 rename；
+内容无变化不写盘。
+
+测试：新增 `test_client_state.js`（30 项），全量 84 项通过。
+
 ## v1.0.1
 
 **Skillsmith v1.0.1 — 智能体管理增强 + 不支持客户端保护 + 搬家修复**

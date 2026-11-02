@@ -27,6 +27,7 @@
  *  额外提供（上游没有，但本机需要）：
  *    GET  /api/state   → 完整矩阵 + token 估算 + 操作日志
  *    POST /api/bulk    body: {action: on|off|lean, agent}
+ *    GET  /api/verify  → 账本一致性自检（目录状态 vs 客户端私有账本）
  *    GET  /api/health
  * ─────────────────────────────────────────────────────────────
  */
@@ -331,6 +332,18 @@ function createServer(desktop = false) {
     // ============ 扩展：完整矩阵 ============
     if (p === '/api/state' && req.method === 'GET') {
       return sendJson(res, 200, fullState());
+    }
+
+    // ============ 扩展：账本一致性自检 ============
+    //
+    // 回答「我在面板看到的，和客户端实际读到的，是同一件事吗」。
+    // 有账本的端（WorkBuddy / Trae / CodeArts）必须两处都改才算真开，
+    // 任何一处没对上，用户就会遇到「还得去客户端再点一次」。
+    //
+    // 桌面版本地调用，不需要鉴权；这是只读接口，不产生副作用。
+    if (p === '/api/verify' && req.method === 'GET') {
+      const r = core.verifyLedger();
+      return sendJson(res, 200, r);
     }
 
     // ============ 扩展：批量开关 ============

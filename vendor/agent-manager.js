@@ -375,8 +375,14 @@
     k1.value = 'json_array';
     const k2 = el('option', null, 'key=value 行');
     k2.value = 'kv_lines';
+    // json_map：WorkBuddy 那种 { 技能名: 关闭标记 } 的映射表。
+    // 缺这一项时，用户在 WorkBuddy 那行点保存会把 json_map 覆盖成 json_array，
+    // 账本就再也对不上了 —— 所以必须能选、也必须能原样保留。
+    const k3 = el('option', null, 'json 映射');
+    k3.value = 'json_map';
     kindSel.appendChild(k1);
     kindSel.appendChild(k2);
+    kindSel.appendChild(k3);
     kindSel.value = a.statusKind || 'json_array';
 
     const keyInput = el('input');
@@ -476,7 +482,13 @@
         // 空串是「显式清空」—— 后端要能把它写进配置去覆盖内置默认值
         statusFile,
         statusKind: statusFile ? kind : '',
-        statusKey: statusFile && kind === 'json_array' ? key : '',
+        // 只有「无字段名」的格式才把 statusKey 清空；
+        // json_array 与 json_map 都要字段名（disabledSkills / skillOverrides）
+        statusKey: statusFile && kind !== 'kv_lines' ? key : '',
+        // json_map 需要「关闭标记」的取值。用户没改过就沿用内置默认，
+        // 这里只回传用户显式填的值，避免把内置的 off 覆盖成空。
+        offValue: base.offValue,
+        offValues: base.offValues,
       };
     }
 

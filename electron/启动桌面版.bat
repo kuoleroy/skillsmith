@@ -19,6 +19,12 @@ REM ============================================================================
 
 setlocal
 set "DIR=%~dp0"
+REM  %~dp0 结尾必定带反斜杠。若直接写成 "%DIR%" 传给 Electron，
+REM  Windows 的命令行解析会把 "...\electron\" 末尾的闭引号转义成字面量，
+REM  argv 变成 C:\...\electron"（多一个引号）→ Electron 找不到应用目录，
+REM  弹 "Unable to find Electron app at ..."。
+REM  这里把尾反斜杠去掉，再拼路径。
+if "%DIR:~-1%"=="\" set "DIR=%DIR:~0,-1%"
 cd /d "%DIR%"
 
 REM ── 清掉 WorkBuddy 注入的环境变量 ──
@@ -33,7 +39,7 @@ set "CODEBUDDY_BROKERED_FS_HOOK_ENABLED="
 set "SKILLSWITCH_DESKTOP=1"
 
 REM ── 找 electron ──
-set "ELECTRON=%DIR%node_modules\electron\dist\electron.exe"
+set "ELECTRON=%DIR%\node_modules\electron\dist\electron.exe"
 if not exist "%ELECTRON%" (
   echo.
   echo   [首次运行] 正在下载 Electron 运行时，需要几分钟...
@@ -56,5 +62,8 @@ if not exist "%ELECTRON%" (
   exit /b 1
 )
 
+REM ── 启动 ──
+REM  用 start "" 前缀，"" 是窗口标题占位（否则第一个引号参数会被当标题）。
+REM  DIR 已去掉尾反斜杠，所以 "%DIR%" 传给 Electron 的是干净的目录路径。
 start "" "%ELECTRON%" "%DIR%"
 endlocal

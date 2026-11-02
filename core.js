@@ -20,6 +20,7 @@ const path = require('path');
 const os = require('os');
 const agentConfig = require('./agent-config.js');
 const settings = require('./settings.js');
+const clientState = require('./client-state.js');
 
 // ---------------------------------------------------------------- 路径
 
@@ -134,6 +135,8 @@ function canonReal(skillName) {
 /** 清掉真源相关缓存（改址后调用，避免旧条目堆积） */
 function clearCanonCache() {
   _canonRealCache.clear();
+  // 账本 key 缓存同样依赖「真源里的 SKILL.md」，真源一改就得重算
+  clearLedgerKeyCache();
 }
 
 function linksToCanon(p, skillName) {
@@ -260,112 +263,78 @@ function readFrontmatter(skillDir) {
   return out;
 }
 
-// ---------------------------------------------------------------- 清单读写
+// ---------------------------------------------------------------- 客户端账本
+//
+// 各端「哪些技能被关掉」记在各自的私有文件里，格式互不相同（详见 client-state.js）。
+// 这一层统一交给 client-state.js 处理，core 只关心「开 / 关」两个语义。
+//
+// 历史教训：早期这里只认 CodeArts 的 kv 清单和 Trae 的数组，
+// WorkBuddy 的 skillOverrides 完全没接 —— 于是目录摘了、账本还记着关，
+// 用户不得不在客户端里再点一次。这是「双份记账」问题的根源。
 
-/** 读 CodeArts 风格的 key=value 清单 */
-function readKvLines(file) {
-  const map = new Map();
-  let raw;
-  try {
-    raw = fs.readFileSync(file, 'utf8');
-  } catch (e) {
-    return map;
-  }
-  for (const line of raw.split(/\r?\n/)) {
-    const t = line.trim();
-    if (!t || t.startsWith('#')) continue;
-    const i = t.indexOf('=');
-    if (i < 0) continue;
-    const k = t.slice(0, i).trim().toLowerCase();
-    const v = t.slice(i + 1).trim();
-    if (k) map.set(k, v);
-  }
-  return map;
+/**
+ * 某个技能的「账本候选 key」。
+ *
+ * 为什么不能直接用目录名：
+ *   客户端记的是它自己解析出的技能名（frontmatter 的 name），
+ *   历史数据里还出现过用 name_cn 的（例：score-rewrite 存成「乐谱改写」）。
+ *   只认目录名会读漏、写重。
+ *
+ * 性能：snapshot 会对「技能 × 端」逐个查账本，每次都读 SKILL.md 太贵。
+ * 这里按「真源路径 + 技能名」缓存，并按真源地址失效（改址后不能沿用旧缓存）。
+ */
+const _keyCache = new Map();
+
+function ledgerKeys(skillName) {
+  const root = canonRoot();
+  const ck = root + '|' + skillName;
+  if (_keyCache.has(ck)) return _keyCache.get(ck);
+
+  const dir = path.join(root, skillName);
+  const fm = readFrontmatter(dir);
+  const keys = clientState.candidateKeys(
+    { name: skillName, title: fm.name_cn || '' },
+    fm
+  );
+  _keyCache.set(ck, keys);
+  return keys;
 }
 
-/** 写 CodeArts 风格清单 */
-function writeKvLines(file, map) {
-  const lines = [];
-  for (const [k, v] of map) lines.push(`${k}=${v}`);
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, lines.join('\n') + (lines.length ? '\n' : ''), 'utf8');
-}
-
-/** 读 JSON 数组字段 */
-function readJsonArray(file, key) {
-  try {
-    const d = JSON.parse(fs.readFileSync(file, 'utf8'));
-    return Array.isArray(d[key]) ? d[key] : [];
-  } catch (e) {
-    return [];
-  }
-}
-
-/** 写 JSON 数组字段（保留其他字段） */
-function writeJsonArray(file, key, items) {
-  let d = {};
-  try {
-    d = JSON.parse(fs.readFileSync(file, 'utf8'));
-  } catch (e) { /* 文件不存在或损坏则重建 */ }
-  d[key] = items;
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(d, null, 2), 'utf8');
+/** 配置层缓存被清空时，账本 key 缓存也要一起失效 */
+function clearLedgerKeyCache() {
+  _keyCache.clear();
 }
 
 /**
- * 设置某端某技能的「禁用清单」状态。
- * 返回 true 表示有实际变更。
+ * 设置某端某技能的账本状态。
+ *
+ * 返回值保留旧契约（boolean = 是否有实际变更），
+ * 因为调用方只关心「要不要报告成功」。详细原因放到 _lastLedgerDetail。
  */
+let _lastLedgerDetail = '';
+
 function setStatus(cfg, skillName, disabled) {
   if (!cfg.statusFile) return false;
-  const key = skillName.toLowerCase();
-
-  if (cfg.statusKind === 'kv_lines') {
-    // CodeArts：文件里 name=false 表示禁用，name=true 表示启用
-    const map = readKvLines(cfg.statusFile);
-    const want = disabled ? 'false' : 'true';
-    const old = map.get(key);
-    if (old === want) return false;
-    map.set(key, want);
-    writeKvLines(cfg.statusFile, map);
-    return true;
-  }
-
-  if (cfg.statusKind === 'json_array') {
-    // Trae：disabledSkills 数组，元素是 skill 名
-    const items = readJsonArray(cfg.statusFile, cfg.statusKey);
-    const lower = items.map((x) => String(x).toLowerCase());
-    const idx = lower.indexOf(key);
-    let changed = false;
-    if (disabled && idx < 0) {
-      items.push(skillName);
-      changed = true;
-    } else if (!disabled && idx >= 0) {
-      items.splice(idx, 1);
-      changed = true;
-    }
-    if (changed) writeJsonArray(cfg.statusFile, cfg.statusKey, items);
-    return changed;
-  }
-
-  return false;
+  const r = clientState.writeLedger(cfg, ledgerKeys(skillName), disabled);
+  _lastLedgerDetail = r.detail;
+  return r.changed;
 }
 
-/** 查询某端某技能是否被清单禁用 */
+/** 最近一次 setStatus 的细节（给 enable/disable 构造结果说明用） */
+function lastLedgerDetail() {
+  return _lastLedgerDetail;
+}
+
+/**
+ * 查询某端某技能是否被客户端账本标记为禁用。
+ *
+ * 注意：这是「客户端的记账」，不是「目录里有没有」。
+ * 两者必须一起看才算真正开了 —— 只有目录、账本还是关的，
+ * 客户端照样不加载（这正是过去「还得去客户端再开一遍」的原因）。
+ */
 function statusDisabled(cfg, skillName) {
   if (!cfg.statusFile) return false;
-  const key = skillName.toLowerCase();
-  if (cfg.statusKind === 'kv_lines') {
-    const map = readKvLines(cfg.statusFile);
-    const v = map.get(key);
-    // 文件里 name=false 表示禁用
-    return v !== undefined && v.toLowerCase() === 'false';
-  }
-  if (cfg.statusKind === 'json_array') {
-    const items = readJsonArray(cfg.statusFile, cfg.statusKey);
-    return items.some((x) => String(x).toLowerCase() === key);
-  }
-  return false;
+  return clientState.readLedger(cfg, ledgerKeys(skillName)).disabled;
 }
 
 // ---------------------------------------------------------------- 技能清单
@@ -488,6 +457,8 @@ function snapshot() {
         disabledByList,
         // 对 CodeArts 而言，目录在但清单禁用 = 已关闭（零 I/O 关闭）
         effective: present && !disabledByList,
+        // 该端有没有独立账本（有账本的端，目录与账本必须同时为「开」才算真开）
+        hasLedger: Boolean(cfg.statusFile),
       };
     }
     return { ...s, cells };
@@ -508,6 +479,78 @@ function snapshot() {
 
   return { rows, agents, canonRoot: canonRoot() };
 }
+
+// ---------------------------------------------------------------- 一致性自检
+
+/**
+ * 账本一致性自检。
+ *
+ * 回答一个具体问题：**「我在面板上看到的，和客户端实际会读到的，是同一件事吗？」**
+ *
+ * 为什么必须有这个：
+ *   开关要同时改两处 —— 目录（junction / 真实副本）和客户端私有账本。
+ *   任何一处没对上，用户就会遇到「面板显示已开，客户端里还是关的，
+ *   还得去客户端再点一次」。这种不一致是静默的：界面照样显示正常，
+ *   只有用户到客户端里看才发现。
+ *
+ * 判定口径（与客户端实际行为一致）：
+ *   · 无账本的端：目录在 = 开
+ *   · 有账本的端：目录在 **且** 账本未记禁用 = 开
+ *   所以「目录在但账本禁用」就是不一致 —— 这是最需要暴露的一种。
+ *
+ * @returns {{
+ *   ok: boolean,
+ *   checked: number,
+ *   problems: Array<{
+ *     skill: string, agent: string, kind: string,
+ *     dirPresent: boolean, ledgerDisabled: boolean, message: string
+ *   }>
+ * }}
+ */
+function verifyLedger() {
+  const skills = listSkills();
+  const problems = [];
+  let checked = 0;
+
+  for (const s of skills) {
+    for (const [agent, cfg] of Object.entries(AGENTS)) {
+      // 规则上不属于这一端的，跳过（不该装就不谈一致）
+      if (!applicableTo(s.name, agent)) continue;
+      checked += 1;
+
+      const p = path.join(cfg.dir, s.name);
+      const dirPresent = cfg.mode === 'realdir' ? isRealDir(p) : linksToCanon(p, s.name);
+      const ledgerDisabled = statusDisabled(cfg, s.name);
+
+      if (dirPresent && ledgerDisabled) {
+        // 最要紧的一种：目录在，客户端却把它当禁用的
+        problems.push({
+          skill: s.name,
+          agent,
+          kind: 'dir-on-ledger-off',
+          dirPresent,
+          ledgerDisabled,
+          message: '目录已就位，但客户端账本仍记着禁用 —— 在客户端里会显示为关闭',
+        });
+      } else if (!dirPresent && !ledgerDisabled && cfg.statusFile) {
+        // 目录不在、账本却是「开」的：客户端下次扫描会发现技能不见了。
+        // 不算错（关闭时移除目录本就正常），但如果用户以为是「开」的就会困惑，
+        // 只在账本被显式写成开启时才报。
+        problems.push({
+          skill: s.name,
+          agent,
+          kind: 'dir-off-ledger-on',
+          dirPresent,
+          ledgerDisabled,
+          message: '目录里没有该技能，但账本没有禁用记录 —— 若期望开启，说明目录层没建成功',
+        });
+      }
+    }
+  }
+
+  return { ok: problems.length === 0, checked, problems };
+}
+
 
 // ---------------------------------------------------------------- 并发锁
 
@@ -594,7 +637,18 @@ function withLock(fn) {
 
 // ---------------------------------------------------------------- 开关操作
 
-/** 开启一个技能（对指定端或全部端） */
+/**
+ * 开启一个技能（对指定端或全部端）。
+ *
+ * 「开启」对同一个端可能要做两件事，缺一不可：
+ *   1. 目录层：junction 在 / 真实目录在  —— 客户端能扫描到
+ *   2. 账本层：客户端的禁用记录被清掉    —— 客户端不会自己再关掉它
+ *
+ * 只做第 1 件就是过去的 bug：面板显示已开，客户端读完自己的账本
+ * 又把它当作禁用的，用户只能去客户端里再点一次。
+ *
+ * 返回的 detail 会说明这次到底动了哪一层，方便排查「为什么没生效」。
+ */
 function enable(skillName, onlyAgent) {
   const results = [];
   const canon = path.join(canonRoot(), skillName);
@@ -607,19 +661,37 @@ function enable(skillName, onlyAgent) {
     try {
       if (cfg.mode === 'realdir') {
         // CodeArts：真实目录副本 + 清单标启用
-        if (!isRealDir(p)) copyRealDir(canon, p);
-        const ch = setStatus(cfg, skillName, false);
-        results.push({ ok: true, agent, detail: ch ? '已复制并标记启用' : '已就位' });
+        let dirChanged = false;
+        if (!isRealDir(p)) {
+          copyRealDir(canon, p);
+          dirChanged = true;
+        }
+        const ledChanged = setStatus(cfg, skillName, false);
+        results.push({
+          ok: true,
+          agent,
+          dir: dirChanged ? 'created' : 'existed',
+          ledger: cfg.statusFile ? (ledChanged ? 'updated' : 'clean') : 'none',
+          detail: describeChange(dirChanged, ledChanged, cfg),
+        });
       } else {
+        let dirChanged = false;
         if (!linksToCanon(p, skillName)) {
           if (fs.existsSync(p) && !isJunction(p)) {
             results.push({ ok: false, agent, detail: '存在真实副本，未覆盖' });
             continue;
           }
           makeJunction(canon, p);
+          dirChanged = true;
         }
-        const ch = setStatus(cfg, skillName, false);
-        results.push({ ok: true, agent, detail: ch ? '已建立并标记启用' : '已就位' });
+        const ledChanged = setStatus(cfg, skillName, false);
+        results.push({
+          ok: true,
+          agent,
+          dir: dirChanged ? 'created' : 'existed',
+          ledger: cfg.statusFile ? (ledChanged ? 'updated' : 'clean') : 'none',
+          detail: describeChange(dirChanged, ledChanged, cfg),
+        });
       }
     } catch (e) {
       results.push({ ok: false, agent, detail: e.message });
@@ -628,7 +700,29 @@ function enable(skillName, onlyAgent) {
   return results;
 }
 
-/** 关闭一个技能（对指定端或全部端） */
+/**
+ * 把「目录有没有动 / 账本有没有动」翻译成人话。
+ *
+ * 为什么要分这么细：排查「在客户端里还是不生效」时，
+ * 「目录已就位、账本也干净但客户端仍不认」和
+ * 「目录已就位、账本这次才清掉」是两种完全不同的结论。
+ */
+function describeChange(dirChanged, ledChanged, cfg) {
+  const parts = [];
+  parts.push(dirChanged ? '已建立目录' : '目录已就位');
+  if (!cfg.statusFile) return parts.join('，');
+  parts.push(ledChanged ? '已清除客户端禁用记录' : '客户端无禁用记录');
+  return parts.join('，');
+}
+
+
+/**
+ * 关闭一个技能（对指定端或全部端）。
+ *
+ * 同样要动两层：摘目录 + 写客户端的禁用记录。
+ * 只摘目录而不写记录时，客户端重启或重扫后可能又把它当成「用户主动关的」，
+ * 更常见的是——它的 UI 里仍显示关闭，用户以为没生效。
+ */
 function disable(skillName, onlyAgent, purge) {
   const results = [];
 
@@ -645,22 +739,43 @@ function disable(skillName, onlyAgent, purge) {
           const tmp = p + '.old-' + Date.now();
           fs.renameSync(p, tmp);
           fs.rmSync(tmp, { recursive: true, force: true });
-          setStatus(cfg, skillName, true);
-          results.push({ ok: true, agent, detail: '真实目录已删除并标记禁用' });
+          const ledChanged = setStatus(cfg, skillName, true);
+          results.push({
+            ok: true,
+            agent,
+            dir: 'removed',
+            ledger: ledChanged ? 'updated' : 'clean',
+            detail: '真实目录已删除，' + (ledChanged ? '已标记客户端禁用' : '客户端已禁用'),
+          });
         } else {
-          setStatus(cfg, skillName, true);
-          results.push({ ok: true, agent, detail: '已标记禁用（目录保留）' });
+          const ledChanged = setStatus(cfg, skillName, true);
+          results.push({
+            ok: true,
+            agent,
+            dir: 'kept',
+            ledger: ledChanged ? 'updated' : 'clean',
+            detail: '目录保留，' + (ledChanged ? '已标记客户端禁用' : '客户端已禁用'),
+          });
         }
         continue;
       }
 
-      if (linksToCanon(p, skillName)) {
+      let dirChanged = false;
+      if (linksToCanon(p, skillName) || isJunction(p)) {
         removeJunction(p);
-      } else if (isJunction(p)) {
-        removeJunction(p);
+        dirChanged = true;
       }
-      const ch = setStatus(cfg, skillName, true);
-      results.push({ ok: true, agent, detail: ch ? '已摘除并标记禁用' : '已摘除' });
+      const ledChanged = setStatus(cfg, skillName, true);
+      results.push({
+        ok: true,
+        agent,
+        dir: dirChanged ? 'removed' : 'absent',
+        ledger: cfg.statusFile ? (ledChanged ? 'updated' : 'clean') : 'none',
+        detail: (dirChanged ? '已摘除目录' : '目录本就不在')
+          + (cfg.statusFile
+            ? (ledChanged ? '，已标记客户端禁用' : '，客户端已禁用')
+            : ''),
+      });
     } catch (e) {
       results.push({ ok: false, agent, detail: e.message });
     }
@@ -861,4 +976,6 @@ module.exports = {
   rebindAll: (...args) => withLock(() => rebindAll(...args)),
   estimateTokens,
   dirStats,
+  verifyLedger,
+  lastLedgerDetail,
 };

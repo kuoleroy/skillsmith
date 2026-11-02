@@ -103,14 +103,47 @@ git tag v1.0.1 && git push origin v1.0.1
 
 ### 各端的开关机制不同
 
-| 机制 | 端 | 关闭方式 |
+**关键点：光摘目录不够。** 部分客户端除目录之外，还在自己的配置里另记一份
+「哪些技能被关掉过」。只动目录时，客户端读完自己那份账本又会当作禁用 ——
+表现就是「本工具里显示已开，客户端里还是关的，还得再去点一次」。
+
+所以对这类端，开关必须**同时**改两处：
+
+| 端 | 目录机制 | 客户端私有账本 |
 |---|---|---|
-| `junction` | WorkBuddy、Claude Code、CodeBuddy、Codex、OpenCode、Trae CN、Trae 国际版、Qoder | 摘掉目录联接 |
-| `junction` + 状态文件 | Trae CN、Trae 国际版 | 额外写 `skill-config.json` 的 `disabledSkills` |
-| `realdir` + 状态清单 | 华为 CodeArts | 写官方清单 `UserSkillStatus.txt`（`name=false`=禁用） |
+| Claude Code、CodeBuddy、Codex、OpenCode、Qoder | `junction` | 无 —— 摘目录即完全生效 |
+| WorkBuddy、WorkBuddy 国际版 | `junction` | `settings.json` 的 `skillOverrides`（开=删记录） |
+| Trae CN、Trae 国际版 | `junction` | `skill-config.json` 的 `disabledSkills` 数组 |
+| 华为 CodeArts | `realdir`（真实副本） | `skills/UserSkillStatus.txt`（`name=false`） |
 
 CodeArts 是特例：它用 `readdir` 过滤掉符号链接，**只认真实目录副本**，
 所以给它装技能必须复制实体目录，关闭则走官方清单。
+
+WorkBuddy 的账本语义（读它自己的程序确认，不是猜的）：
+
+```js
+// 它的内部实现
+toggleSkill: disable
+  ? setSkillOverrides(key, fullyDisable ? 'off' : 'user-invocable-only')  // 关
+  : deleteSkillOverrides(key)                                            // 开 = 删记录
+```
+
+`off` / `user-invocable-only` / `name-only` 三者都表示「模型不得自动调用」。
+本工具写 `off`（完全关闭），因为它要表达的就是「关掉」，而不是「留着手动调」。
+
+### 一致性自检
+
+两处都改才叫真开，所以需要能验证。命令行：
+
+```bash
+node align-ledger.js            # 预演：列出目录与账本不一致的项
+node align-ledger.js --apply    # 对齐（以目录状态为准，写盘前自动备份）
+```
+
+HTTP 接口：`GET /api/verify` 返回 `{ ok, checked, problems }`。
+
+`problems` 里最常见的是 `dir-on-ledger-off`：目录已就位，但客户端账本
+仍记着禁用 —— 这一条就是「开了还要去客户端再开一遍」的直接证据。
 
 ---
 
@@ -233,11 +266,14 @@ CodeArts 是特例：它用 `readdir` 过滤掉符号链接，**只认真实目�
 
 ```
 skillsmith/            ← 仓库根就是软件本体
-├── core.js              核心逻辑：junction 判定、增删、真源保护、重新绑定
+├── core.js              核心逻辑：junction 判定、增删、真源保护、重新绑定、一致性自检
+├── client-state.js      客户端账本适配层：各端私有禁用记录的读写（三种格式）
 ├── agent-config.js      智能体配置：内置基线 + 用户增删改合并
 ├── settings.js          全局设置：共享技能真源地址
 ├── server.js            HTTP 服务与 API（浏览器版与桌面版共用）
 ├── launcher.js          浏览器版启动器（剥掉 WorkBuddy 的 FS 护栏）
+├── align-ledger.js      账本对齐工具（目录为准确认客户端账本）
+├── verify-real-sync.js  真实环境联通性验证（开关一轮并断言两层同步）
 ├── 启动浏览器版.bat      浏览器版启动
 ├── vendor/              前端（复用开源 skills-switch，MIT）
 │   ├── index.html
@@ -253,7 +289,7 @@ skillsmith/            ← 仓库根就是软件本体
 │   ├── preload.js       最小 API 面
 │   ├── stage.js         打包前把依赖平铺到 app/
 │   └── 启动桌面版.bat
-└── test_agent_config.js 智能体配置功能测试（22 项）
+└── test_agent_config.js 智能体配置功能测试（40 项）
 ```
 
 ---
@@ -274,6 +310,16 @@ npm run dist        # 产物：dist/Skillsmith-1.0.1-setup.exe
 **真源永远不动。** 所有「删除」操作都先经 `removeJunction()` 校验
 「确实是 junction」，只摘链接。CodeArts 的实体副本若要真删，走
 「先改名再删」两段式，避开宿主的递归删除护栏。
+
+**写客户端账本时（`client-state.js`）。** 这些是用户真实使用的配置文件，
+所以定了四条硬规则：
+
+1. 文件不存在 → 当空账本，不报错
+2. 文件存在但 JSON 解析失败 → **拒绝写入**并抛错。宁可这次开关失败，
+   也不覆盖掉可能是手写的那份配置（WorkBuddy 自己也是这个策略）
+3. 写盘前备份到 `~/.agents/skillsmith/backups/`（最多留 20 份）
+4. 先写临时文件再 `rename`，内容没实际变化不写盘
+   —— 客户端可能监听文件变化重扫，无谓写入会触发它整轮重扫
 
 **WorkBuddy 的 FS 护栏。** WorkBuddy 会给子进程注入 `node-language-shim.cjs`，
 统计删除次数，超阈值就拒绝后续删除。而「关闭技能」在 junction 端就是摘链接，
@@ -297,6 +343,7 @@ POST /api/projects                 上游契约
 
 GET  /api/state                    扩展：完整矩阵 + token 估算 + 日志
 POST /api/bulk                     扩展：{ action: on|off|lean }
+GET  /api/verify                   扩展：账本一致性自检（目录 vs 客户端账本）
 GET  /api/health                   扩展：健康检查
 GET  /api/agent-config             扩展：列出全部端（含未安装/自定义）
 POST /api/agent-config             扩展：{ action: save|remove|reset, agent: {...} }

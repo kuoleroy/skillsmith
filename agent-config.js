@@ -60,14 +60,40 @@ const BUILTIN_AGENTS = [
     name: 'WorkBuddy',
     dir: path.join(HOME, '.workbuddy', 'skills'),
     mode: 'junction',
-    note: '跟随链接读取，摘 junction 即关闭',
+    // ------------------------------------------------------------------
+    //  WorkBuddy 是「目录 + 私有账本」双轨的端，两处都得改才算真的开关。
+    //
+    //  账本位置：~/settings.json 的 skillOverrides 映射，形如
+    //      { "mv-image-pipeline": "user-invocable-only", ... }
+    //
+    //  语义（读它自己的 app.asar 确认，不是猜的）：
+    //      overrideDisablesModel(v) = v in { user-invocable-only, off, name-only }
+    //      即这三个值都表示「模型不得自动调用」
+    //      关闭：setSkillOverrides(key, fullyDisable ? 'off' : 'user-invocable-only')
+    //      开启：deleteSkillOverrides(key)      ← 开 = 删 key，不是写 true
+    //
+    //  所以我们写 'off'（完全关闭）：本工具的语义就是「关掉」，
+    //  而不是「留着给用户手动 @ 调用」那种半关。
+    // ------------------------------------------------------------------
+    statusFile: path.join(HOME, '.workbuddy', 'settings.json'),
+    statusKind: 'json_map',
+    statusKey: 'skillOverrides',
+    offValue: 'off',
+    offValues: ['user-invocable-only', 'off', 'name-only'],
+    note: '摘 junction + settings.json 的 skillOverrides 双写；开=删记录',
   },
   {
     id: 'workbuddy-intl',
     name: 'WorkBuddy 国际版',
     dir: path.join(HOME, '.workbuddy-ai', 'skills'),
     mode: 'junction',
-    note: '跟随链接读取，摘 junction 即关闭',
+    // 与 WorkBuddy 同源同机制，账本各在自己的 settings.json 里
+    statusFile: path.join(HOME, '.workbuddy-ai', 'settings.json'),
+    statusKind: 'json_map',
+    statusKey: 'skillOverrides',
+    offValue: 'off',
+    offValues: ['user-invocable-only', 'off', 'name-only'],
+    note: '摘 junction + settings.json 的 skillOverrides 双写；开=删记录',
   },
   {
     id: 'claude-code',
@@ -419,6 +445,15 @@ function saveAgent(data, remove) {
   }
   if (data.statusKey !== undefined && data.statusKey !== null) {
     entry.statusKey = String(data.statusKey).trim();
+  }
+  // json_map 的「关闭标记」取值。不写进配置的话，用户改过一次路径/名称后
+  // 内置的默认值 off 就丢了，账本会退回按 user-invocable-only 判定 ——
+  // 语义从「完全关闭」变成「半关」，用户会发现客户端仍能手动调用。
+  if (data.offValue !== undefined && data.offValue !== null && data.offValue !== '') {
+    entry.offValue = String(data.offValue).trim();
+  }
+  if (Array.isArray(data.offValues) && data.offValues.length) {
+    entry.offValues = data.offValues.map((x) => String(x).trim()).filter(Boolean);
   }
   if (data.note) entry.note = data.note;
   if (data.enabled === false) entry.enabled = false;
