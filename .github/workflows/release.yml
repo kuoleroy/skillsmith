@@ -59,7 +59,14 @@ jobs:
 
       - name: Unit tests
         working-directory: .
-        run: node test_agent_config.js && node test_rebind_broken.js
+        # 每个测试都自带沙箱（临时真源 + 临时端 + 配置备份还原），
+        # runner 上没有真实技能目录也能跑完。
+        run: |
+          node test_agent_config.js
+          node test_rebind_broken.js
+          node test_client_state.js
+          node test_safety.js
+          node test_installer.js
 
       - name: Stage app files
         working-directory: electron

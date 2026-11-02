@@ -28,6 +28,14 @@
  *    GET  /api/state   → 完整矩阵 + token 估算 + 操作日志
  *    POST /api/bulk    body: {action: on|off|lean, agent}
  *    GET  /api/verify  → 账本一致性自检（目录状态 vs 客户端私有账本）
+ *
+ *  技能安装（真源管理器）：
+ *    GET  /api/installed          → 已装清单（安装记录 ∪ 真源实况）
+ *    POST /api/install/preview    body: {source, subdir?}   只读，不写盘
+ *    POST /api/install            body: {source, subdir?, overwrite?, expectedCommit?, enableAgents?}
+ *    POST /api/uninstall          body: {name}
+ *    POST /api/adopt              body: {name}   把手工放进真源的技能纳入管理
+ *
  *    GET  /api/health
  * ─────────────────────────────────────────────────────────────
  */
@@ -40,6 +48,7 @@ const path = require('path');
 const { exec } = require('child_process');
 const core = require('./core');
 const agentConfig = require('./agent-config.js');
+const installer = require('./installer.js');
 
 const HOST = '127.0.0.1';
 const PORT = Number(process.env.SKILLSWITCH_PORT || 17888);
@@ -358,6 +367,108 @@ function createServer(desktop = false) {
       const report = core.bulk(action, onlyAgent);
       logOp({ action: 'bulk-' + action, agent: onlyAgent || 'ALL', count: report.length });
       return sendJson(res, 200, { ok: true, report, state: fullState() });
+    }
+
+    // ============ 扩展：技能安装 / 卸载 ============
+    //
+    // 这一组把 Skillsmith 从「开关面板」扩展成「安装入口」：
+    //   来源 → 预览（清单解析 + 安全扫描 + 体积/token）→ 用户确认
+    //   → 复制进真源 → 记录来源 → 按需给各端建立链接
+    //
+    // preview 和 install 刻意分成两个请求：
+    // 用户必须先看到「装进来的到底是什么」，install 只接受确认过的来源。
+    // install 会重新拉取并与预览的 commit 比对，两次之间来源被换掉就中止。
+    //
+    // 安全边界：
+    //   · 服务只监听 127.0.0.1（见 HOST），外部不可达
+    //   · 只解析 JSON（readBody），跨站表单提交会在解析阶段失败被拒
+    //     —— 第三方网页无法诱导本机安装技能
+    //   · 技能名会过 validateName + 真源前缀校验，防止路径穿越写穿目录
+
+    if (p === '/api/installed' && req.method === 'GET') {
+      return sendJson(res, 200, {
+        canonRoot: core.canonRoot(),
+        skills: installer.listInstalled(),
+      });
+    }
+
+    if (p === '/api/install/preview' && req.method === 'POST') {
+      let body;
+      try {
+        body = await readBody(req);
+      } catch (e) {
+        return sendJson(res, 400, { ok: false, message: e.message });
+      }
+      if (!body.source) return sendJson(res, 400, { ok: false, message: '缺少 source' });
+      try {
+        const r = await installer.preview(body.source, { subdir: body.subdir });
+        logOp({ action: 'install-preview', source: body.source, name: r.name });
+        return sendJson(res, 200, r);
+      } catch (e) {
+        return sendJson(res, 400, { ok: false, message: e.message });
+      }
+    }
+
+    if (p === '/api/install' && req.method === 'POST') {
+      let body;
+      try {
+        body = await readBody(req);
+      } catch (e) {
+        return sendJson(res, 400, { ok: false, message: e.message });
+      }
+      if (!body.source) return sendJson(res, 400, { ok: false, message: '缺少 source' });
+      try {
+        const r = await installer.install(body.source, {
+          subdir: body.subdir,
+          overwrite: body.overwrite === true,
+          // 预览时拿到的 commit：来源在确认期间被改掉就拒绝，避免"看的和装的不一样"
+          expectedCommit: body.expectedCommit || null,
+          enableAgents: body.enableAgents,
+        });
+        logOp({
+          action: 'install',
+          source: body.source,
+          name: r.name,
+          enabled: r.enabled.length,
+        });
+        // 不在这里拼 fullState()：它会触发整表快照，装上大技能时会明显拖慢响应。
+        // 前端装完自己再拉一次 /api/state 更稳（这条经验来自 agent-config 的超时修复）。
+        return sendJson(res, 200, r);
+      } catch (e) {
+        return sendJson(res, 400, { ok: false, message: e.message });
+      }
+    }
+
+    if (p === '/api/uninstall' && req.method === 'POST') {
+      let body;
+      try {
+        body = await readBody(req);
+      } catch (e) {
+        return sendJson(res, 400, { ok: false, message: e.message });
+      }
+      if (!body.name) return sendJson(res, 400, { ok: false, message: '缺少 name' });
+      try {
+        const r = installer.uninstall(body.name);
+        logOp({ action: 'uninstall', name: body.name });
+        return sendJson(res, 200, r);
+      } catch (e) {
+        return sendJson(res, 400, { ok: false, message: e.message });
+      }
+    }
+
+    if (p === '/api/adopt' && req.method === 'POST') {
+      let body;
+      try {
+        body = await readBody(req);
+      } catch (e) {
+        return sendJson(res, 400, { ok: false, message: e.message });
+      }
+      if (!body.name) return sendJson(res, 400, { ok: false, message: '缺少 name' });
+      try {
+        return sendJson(res, 200, installer.adopt(body.name));
+      } catch (e) {
+        return sendJson(res, 400, { ok: false, message: e.message });
+      }
     }
 
     // ============ 扩展：健康检查 ============

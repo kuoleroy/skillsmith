@@ -1,11 +1,18 @@
 # Skillsmith —— 智能体技能管理软件
 
-控制各家 AI 工具（WorkBuddy / Claude Code / Trae / CodeArts / Qoder …）共享技能的
-**开关状态**。真源只有一个（默认 `~/.agents/skills`，地址可在设置里改），
-本工具只负责在各端「装上 / 摘掉」，**从不删除真源内容**。
+管理各家 AI 工具（WorkBuddy / Claude Code / Trae / CodeArts / Qoder …）共享的**技能真源**。
 
-> 本仓库是**独立的通用软件**，与任何具体技能无关 —— 它只管「技能的开关」。
-> 真源里的技能由各自的仓库维护，本工具不碰它们的内容。
+做两件事：
+
+- **装** —— 从本地文件夹或 git 仓库安装技能。装之前给出文件清单、体积、上下文占用与安全扫描，
+  让你先看清「装进来的是什么」。
+- **开** —— 一次开关同时改目录**和**各客户端自己的账本（WorkBuddy 的 `skillOverrides`、
+  Trae 的 `disabledSkills`、CodeArts 的 `UserSkillStatus.txt`），不用再去客户端里点一遍。
+
+真源只有一个（默认 `~/.agents/skills`，地址可在设置里改），本工具**从不删除真源内容**。
+
+> 本仓库是**独立的通用软件**，与任何具体技能无关 —— 技能的内容由各自的仓库维护，
+> 本工具只负责把它们装进来、以及在各端开合。
 
 > 英文名取自 smith（锻造者/工匠）—— 管理技能的匠人；中文副标题「智能体技能管理软件」。
 
@@ -147,6 +154,99 @@ HTTP 接口：`GET /api/verify` 返回 `{ ok, checked, problems }`。
 
 ---
 
+## 安装技能
+
+Skillsmith 不只是开关面板，它也是技能的安装入口。三种来源：
+
+```
+本地文件夹      ./my-skill   或   C:\path\to\skill
+简写仓库        owner/repo
+仓库地址        https://github.com/owner/repo
+指定子目录      owner/repo#skills/foo
+完整路径        https://github.com/owner/repo/tree/main/skills/foo
+```
+
+### 装之前先看清楚
+
+安装分两步，**中间必须过一道预览**：
+
+1. **预览**（`POST /api/install/preview`）—— 把来源拉到临时目录，解析清单、
+   跑安全扫描、算体积与上下文占用，返回完整报告。**只读，不写任何东西到真源。**
+2. **安装**（`POST /api/install`）—— 会重新拉取一次并比对 commit，
+   两次之间来源被换掉就中止。**预览里看到的就是装进去的。**
+
+报告里有什么：
+
+| 项 | 说明 |
+|---|---|
+| 名称 / 描述 / 版本 / 许可 / 作者 | 从 `SKILL.md` frontmatter 解析，缺什么标什么，不假装有 |
+| 来源与 commit | git 来源记录到具体提交，以后能对上是哪一版 |
+| 体积 | 文件数与字节数（不算 `.git`） |
+| 上下文占用 | 按入口正文粗估的 token，装之前就知道它会吃掉多少 |
+| 安全发现 | 分级列出，见下 |
+| 冲突 | 真源里是否已有同名技能、之前装过什么版本 |
+
+### 安全扫描：只报告，不拦截
+
+一个技能 = **一段会被 AI 自动加载进上下文的 markdown** + **一堆会被自动执行的脚本**。
+它同时踩中两类风险，所以扫描分两类看：
+
+**代码风险**
+
+| 级别 | 例子 |
+|---|---|
+| 高危 | `curl ... \| sh`、PowerShell 下载执行（IEX）、base64 解码后执行、读 SSH 私钥 / 云凭据 / 浏览器密码库、把本地文件上传出去、`rm -rf ~`、写计划任务与注册表自启动、写 `System32` |
+| 留意 | 提权、`chmod 777`、动态 `eval`、导出环境变量挑密钥 |
+| 提示 | 普通的网络请求（大多数技能都有，仅告知） |
+
+**提示词风险（技能独有）**
+
+`SKILL.md` 的内容会进 system prompt，所以还要查：`忽略之前的指令` 这类改写话术、
+零宽字符藏字、HTML 注释里藏指令、技能里夹带 `.exe/.dll`。
+
+**为什么不禁用而是让人看**
+
+合法技能天天调 API —— `comfyui` 要发 HTTP、跑 python，`parallel-agents` 带 shell 脚本。
+一刀切会把正常技能挡在门外，用户学到的只会是「关掉检查」。所以扫描器只把
+**发现项 + 证据原文 + 一行原因**摆出来，判断权给人。
+
+> 扫描规则是照真实误报调出来的。第一版把 `curl -fsS`（fail+silent）当成了 `-F`（表单上传），
+> 把 `ENV_API_KEY` 常量当成了 `env` 命令，12 个真实技能报出 7 个假高危。
+> 现在这两类都有回归测试钉着 —— 见 `test_safety.js` 第 6 节。
+
+### 已装清单的三种状态
+
+`GET /api/installed` 把**安装记录**和**真源实况**对起来看，因为两者会不一致：
+
+| 状态 | 含义 | 怎么办 |
+|---|---|---|
+| `installed` | 记录与目录都在 | —— |
+| `missing` | 有记录，目录没了（手删了，或从别的机器搬走） | `remove` 清掉残留记录 |
+| `unmanaged` | 目录在，没记录（手工拷进来的） | `adopt` 纳管，之后才有来源与版本信息 |
+
+`unmanaged` 这一种很实用：之前把技能直接拷进真源，软件完全看不见；现在至少能列出来并纳管。
+
+### 元数据不写进技能目录
+
+安装记录在 `~/.agents/skillsmith/installed.json`，**不在技能目录里**。
+
+写进去会污染真源，而且客户端会把多出来的文件也读进上下文。技能目录必须保持
+「可分发」的原样 —— 这也是为什么仓库到真源的同步脚本会清掉 `.github`、`.gitignore` 这类文件。
+
+### 命令行
+
+界面是主路径，CLI 用于脚本化和排障：
+
+```bash
+node skillsmith.js preview owner/repo      # 只看，不装
+node skillsmith.js install owner/repo      # 装（会先预览再问一次）
+node skillsmith.js list                    # 已装清单 + 三种状态
+node skillsmith.js remove <name>           # 卸载：删真源 + 摘各端链接 + 清账本
+node skillsmith.js adopt <name>            # 纳管手工放入的技能
+```
+
+---
+
 ## 桌面版功能
 
 ### 界面布局
@@ -268,9 +368,13 @@ HTTP 接口：`GET /api/verify` 返回 `{ ok, checked, problems }`。
 skillsmith/            ← 仓库根就是软件本体
 ├── core.js              核心逻辑：junction 判定、增删、真源保护、重新绑定、一致性自检
 ├── client-state.js      客户端账本适配层：各端私有禁用记录的读写（三种格式）
+├── manifest.js          技能清单容错解析：frontmatter 子集、名字校验、多技能仓库定位
+├── safety.js            安全扫描：代码风险 + 提示词注入，分级只报告不拦截
+├── installer.js         安装/卸载：来源解析、预览、落盘、来源记录、纳管
 ├── agent-config.js      智能体配置：内置基线 + 用户增删改合并
 ├── settings.js          全局设置：共享技能真源地址
 ├── server.js            HTTP 服务与 API（浏览器版与桌面版共用）
+├── skillsmith.js        命令行入口：preview / install / list / remove / adopt
 ├── launcher.js          浏览器版启动器（剥掉 WorkBuddy 的 FS 护栏）
 ├── align-ledger.js      账本对齐工具（目录为准确认客户端账本）
 ├── verify-real-sync.js  真实环境联通性验证（开关一轮并断言两层同步）
@@ -289,8 +393,18 @@ skillsmith/            ← 仓库根就是软件本体
 │   ├── preload.js       最小 API 面
 │   ├── stage.js         打包前把依赖平铺到 app/
 │   └── 启动桌面版.bat
-└── test_agent_config.js 智能体配置功能测试（40 项）
+└── test_*.js            测试（共 179 项）
 ```
+
+测试分布：
+
+| 文件 | 项数 | 覆盖 |
+|---|---|---|
+| `test_installer.js` | 62 | 来源解析、预览、安装、覆盖、卸载、纳管、三种状态 |
+| `test_agent_config.js` | 40 | 智能体增删改、账本字段保全 |
+| `test_client_state.js` | 32 | 三种账本格式读写、损坏文件拒写、备份 |
+| `test_safety.js` | 31 | 恶意样本命中 + 真实误报回归 |
+| `test_rebind_broken.js` | 14 | 真源搬家后断链重绑 |
 
 ---
 
@@ -349,7 +463,24 @@ GET  /api/agent-config             扩展：列出全部端（含未安装/自�
 POST /api/agent-config             扩展：{ action: save|remove|reset, agent: {...} }
 GET  /api/settings                 扩展：读取设置（真源地址等）
 POST /api/settings                 扩展：{ action: set-canon-root|rebind, ... }
+
+GET  /api/installed                安装：已装清单（记录 ∪ 真源实况）
+POST /api/install/preview          安装：{ source, subdir? }       只读，不写盘
+POST /api/install                  安装：{ source, subdir?, overwrite?, expectedCommit?, enableAgents? }
+POST /api/uninstall                安装：{ name }
+POST /api/adopt                    安装：{ name }  把手工放入的技能纳入管理
 ```
+
+`POST /api/install` 的 `enableAgents` 三种取值：
+
+| 值 | 行为 |
+|---|---|
+| 不传 | 给所有归属该技能的端建立链接（默认，符合「装上就能用」） |
+| `false` | 只放进真源，不动任何端 |
+| `["WorkBuddy", …]` | 只给指定的端建立链接 |
+
+安装类接口只监听 `127.0.0.1` 且只解析 JSON —— 跨站表单提交会在解析阶段被拒，
+第三方网页无法诱导本机安装技能。
 
 ---
 

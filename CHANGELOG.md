@@ -4,7 +4,11 @@ Skillsmith 的版本记录。Release 正文默认取这里对应版本的段落�
 
 ## 未发布
 
-**v1.1.0 — 与客户端真正联通（账本同步）**
+**v1.1.0 — 客户端账本同步 + 技能安装**
+
+两件事：把「开关」打通到客户端真正读取的地方；把「装」做成一条可检查的链路。
+
+### 一、与客户端真正联通（账本同步）
 
 这一版修的是本工具最根本的一个缺陷：**开关只生效了一半**。
 
@@ -31,7 +35,47 @@ Skillsmith 的版本记录。Release 正文默认取这里对应版本的段落�
 而不是重建；写盘前备份到 `~/.agents/skillsmith/backups/`；先写临时文件再 rename；
 内容无变化不写盘。
 
-测试：新增 `test_client_state.js`（30 项），全量 84 项通过。
+### 二、技能安装（真源管理器）
+
+从「开关面板」扩展成「安装入口」。界面还没有入口，先做后端与 CLI。
+
+- `manifest.js` —— 清单容错解析
+  支持 YAML 子集（多行块 `|`、折叠 `>`、行内数组、列表），剥 BOM，字段缺失不当错误。
+  实测 12 个真实技能：11 个有 frontmatter、1 个是 BOM 开头、只有 1 个声明了 version ——
+  所以「缺版本」必须能容忍，不能要求作者整改。
+  技能名过 `validateName`（挡路径穿越、Windows 保留名、结尾点/空格）。
+
+- `safety.js` —— 安全扫描，分级只报告不拦截
+  代码风险：管道执行（`curl | sh`）、PowerShell 下载执行、base64 解码执行、
+  读 SSH 私钥 / 云凭据 / 浏览器密码库、上传本地文件、递归删家目录、
+  计划任务与注册表自启动、写 System32、夹带 `.exe/.dll`。
+  提示词风险（技能独有）：`忽略之前的指令` 类改写话术、零宽字符藏字、
+  HTML 注释藏指令。
+  不禁用的原因：合法技能天天调 API，一刀切会把正常技能挡在门外，
+  用户学到的只会是「关掉检查」。判断权交人。
+
+- `installer.js` —— 安装 / 卸载 / 纳管
+  来源：本地文件夹、`owner/repo`、仓库 URL、`owner/repo#subdir`、GitHub `/tree/` 路径。
+  两步式：`preview` 只读不写盘，`install` 重新拉取并比对 commit ——
+  「预览里看到的」就是「装进去的」。
+  monorepo 自动定位技能根；多个技能时不猜，要求指定子目录。
+  元数据写 `~/.agents/skillsmith/installed.json`，**不进技能目录**（避免污染真源、避免被客户端读进上下文）。
+  已装清单区分 `installed` / `missing`（记录在目录没了）/ `unmanaged`（手工放入未纳管）。
+
+- API：`GET /api/installed`、`POST /api/install/preview`、`POST /api/install`、
+  `POST /api/uninstall`、`POST /api/adopt`
+- CLI：`node skillsmith.js preview|install|list|remove|adopt`
+
+两个实测抓到的 bug（都是「看起来正常、实际失效」那种）：
+
+- 扫描器把 `curl -fsS`（fail+silent）误判成 `-F`（表单上传）——
+  正则加了 `i` 标志，12 个真实技能报出 7 个假高危。改成区分大小写。
+- 扫描器把 `ENV_API_KEY` 里的 `ENV` 当成 `env` 命令 —— 缺词边界。补 `\b`。
+- git 来源落在仓库根时，拿临时目录名（`skillsmith-fetch-xxxx`）去和 frontmatter
+  比对，误报「名字不一致」。改成只在目录名有意义时才比对。
+
+测试：新增 `test_safety.js`（31 项，含真实误报回归）、`test_installer.js`（62 项），
+全量 **179 项**通过。
 
 ## v1.0.1
 
