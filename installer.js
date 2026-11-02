@@ -95,14 +95,27 @@ function parseSource(input) {
   }
   const raw = input.trim();
 
+  /*
+   * 展开 `~`。
+   * 必须支持：README 与文档里到处写 `~/.agents/skills`，用户很自然会把
+   * `~/my-skill` 直接粘进来。早先版本不认这个，落到 git 分支后报
+   * 「看不懂的来源」—— 提示词与该做的事对不上，属于纯误导。
+   */
+  let expanded = raw;
+  if (raw === '~') {
+    expanded = os.homedir();
+  } else if (/^~[\\/]/.test(raw)) {
+    expanded = path.join(os.homedir(), raw.slice(2));
+  }
+
   // ---- 本地路径优先判断：能 stat 到目录就当本地，避免把 `./a/b` 误认成 owner/repo ----
-  const looksLocal = /^[a-zA-Z]:[\\/]/.test(raw)     // C:\ 或 C:/
-    || /^\\\\/.test(raw)                              // UNC
-    || /^\.{1,2}[\\/]/.test(raw)                      // ./ 或 ../
-    || raw.startsWith('/');
+  const looksLocal = /^[a-zA-Z]:[\\/]/.test(expanded)   // C:\ 或 C:/
+    || /^\\\\/.test(expanded)                            // UNC
+    || /^\.{1,2}[\\/]/.test(expanded)                     // ./ 或 ../
+    || expanded.startsWith('/');                          // POSIX 绝对路径
 
   if (looksLocal) {
-    const dir = path.resolve(raw);
+    const dir = path.resolve(expanded);
     let st;
     try {
       st = fs.statSync(dir);

@@ -61,6 +61,12 @@ jobs:
         working-directory: .
         # 每个测试都自带沙箱（临时真源 + 临时端 + 配置备份还原），
         # runner 上没有真实技能目录也能跑完。
+        #
+        # 必须显式用 bash：Windows runner 默认 shell 是 pwsh，
+        # 多行 run 里外部命令的退出码不会中断后续步骤 ——
+        # 中间某个套件挂了、最后一个过了，CI 会假绿。
+        # bash 默认带 -eo pipefail，任何一条失败立即停。
+        shell: bash
         run: |
           node test_agent_config.js
           node test_rebind_broken.js

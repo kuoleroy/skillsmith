@@ -131,10 +131,24 @@ try {
   const local = installer.parseSource(SRC);
   check('本地绝对路径识别为 local', local.type === 'local' && local.dir === path.resolve(SRC), local);
 
-  // 相对路径按当前工作目录解析（与 git / npm 的约定一致），所以这里构造一个真实可解析的
-  const relInput = `./${path.relative(process.cwd(), SRC).split(path.sep).join('/')}`;
-  const rel = installer.parseSource(relInput);
-  check('相对路径识别为 local', rel.type === 'local' && rel.dir === path.resolve(SRC), rel.dir);
+  /*
+   * 相对路径按当前工作目录解析（与 git / npm 的约定一致）。
+   * 注意：沙箱在另一个盘时（GitHub Actions 上 runner 的 cwd 在 D:，家目录在 C:），
+   * path.relative 会返回绝对路径 —— 那时 `./` + 绝对路径是非法输入，
+   * 这条只能跳过，不能硬测。
+   */
+  const relCandidate = path.relative(process.cwd(), SRC);
+  if (path.isAbsolute(relCandidate)) {
+    console.log('  · 相对路径用例跳过（cwd 与沙箱不同盘）');
+  } else {
+    const rel = installer.parseSource(`./${relCandidate.split(path.sep).join('/')}`);
+    check('相对路径识别为 local', rel.type === 'local' && rel.dir === path.resolve(SRC), rel.dir);
+  }
+
+  // `~` 展开：文档里到处写 ~/.agents/skills，用户会直接粘 ~ 开头的路径
+  const tildePath = `~/${path.relative(HOME, SRC).split(path.sep).join('/')}`;
+  const tilde = installer.parseSource(tildePath);
+  check('~ 开头的路径可用', tilde.type === 'local' && tilde.dir === path.resolve(SRC), tilde.dir);
 
   const shorthand = installer.parseSource('kuoleroy/skillsmith');
   check('owner/repo 展开成 github 地址',
