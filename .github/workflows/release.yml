@@ -73,6 +73,7 @@ jobs:
           node test_client_state.js
           node test_safety.js
           node test_installer.js
+          node test_search.js
 
       - name: Stage app files
         working-directory: electron

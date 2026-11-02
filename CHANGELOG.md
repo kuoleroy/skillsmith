@@ -74,8 +74,42 @@ Skillsmith 的版本记录。Release 正文默认取这里对应版本的段落�
 - git 来源落在仓库根时，拿临时目录名（`skillsmith-fetch-xxxx`）去和 frontmatter
   比对，误报「名字不一致」。改成只在目录名有意义时才比对。
 
-测试：新增 `test_safety.js`（31 项，含真实误报回归）、`test_installer.js`（62 项），
-全量 **179 项**通过。
+### 三、安装界面与本地搜索
+
+侧边栏「＋ 安装技能」打开面板，两个 tab：本地（可用）、在线（占位）。
+
+- `search.js` —— 本地模糊搜索
+  四字段加权（name 10 / title 8 / tags 6 / description 3），
+  多词 AND（`comfy 视频` 只出同时沾边的）。
+  命中质量分档：相等 1.0 · 前缀 0.85 · 词边界 0.8 · 包含 0.7 · 子序列 0.3。
+  两处实测调出来的边界：
+  · **子序列只在名字/标题/标签上开**，描述上开会把 `mvi` 命到
+    `browser-cli-skill` 这种毫不相关的技能
+  · **子序列有密度闸**（hit/span ≥ 0.4）：`mvi` 命中 `mv-image-pipeline`
+    跨 4 位可以通过，`comfyui-minimax-h3-video` 跨 19 位被挡掉
+  多词 AND 全空时退回 OR 并标 `partial` —— 否则用户以为搜不到。
+  索引 2 秒 TTL 缓存，安装/卸载/纳管后显式失效。
+
+- `vendor/install-panel.js` —— 安装与搜索面板
+  搜索框防抖 220ms；结果按状态标签（已安装/手工放入/记录残留）着色；
+  点条目展开详情（来源、版本、体积、安装时间、卸载/纳管）；
+  预览页把安全发现按级别列出（规则名 + 文件:行号 + 原因 + 证据原文）。
+  预览时底部固定成「← 返回列表 / 安装」，不跟内容滚出屏幕。
+
+- 在线 tab 明确写「建设中」并说明将来的三步计划。
+  不做点了没反应的假按钮 —— 那比没有更糟。
+
+### 四、修掉一个打包漏文件
+
+`electron/stage.js` 打包时用的是硬编码白名单
+（`core/server/agent-config/settings`）。后来陆续加了
+`client-state / manifest / safety / installer / search`，白名单没跟上 ——
+打出来的安装包 `require` 不到模块，**一启动就崩**。
+本地 `npm start` 完全正常，只有装到别人机器上才炸，属于最难定位的一类。
+改成扫根目录所有 `.js`（排除测试与命令行入口）。
+
+测试：新增 `test_safety.js`（31 项，含真实误报回归）、`test_installer.js`（63 项）、
+`test_search.js`（34 项），全量 **214 项**通过。
 
 ## v1.0.1
 

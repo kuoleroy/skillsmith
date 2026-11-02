@@ -166,6 +166,29 @@ Skillsmith 不只是开关面板，它也是技能的安装入口。三种来源
 完整路径        https://github.com/owner/repo/tree/main/skills/foo
 ```
 
+### 界面
+
+侧边栏「＋ 安装技能」打开面板，两个 tab：
+
+| tab | 现在能做什么 |
+|---|---|
+| **本地** | 模糊搜索真源里已有的技能；从文件夹 / 仓库安装；展开看详情、卸载、纳管 |
+| **在线** | 占位。明确标注「建设中」，并写清将来怎么做 —— 不放点了没反应的假按钮 |
+
+搜索支持：
+
+- 名称、标题、标签、描述四个字段，按重要度加权（名字命中 > 描述命中）
+- 多词 AND：`comfy 视频` 只出同时沾边的；AND 全空时退回 OR 并标「仅匹配部分关键词」
+- 缩写：`mvi` → `mv-image-pipeline`、`scr` → `score-rewrite`
+- 大小写不敏感，中文直接子串匹配
+
+> 缩写匹配有密度闸：`mvi` 能命中 `mv-image-pipeline`（跨 4 位），
+> 但不会命中 `comfyui-minimax-h3-video`（跨 19 位、只是碰巧有这三个字母）。
+> 没有这道闸，缩写会把一半技能都捞出来。
+
+装之前必须先过预览：文件清单、体积、上下文 token、安全发现分级列表、
+是否与已有技能重名。预览时底部会固定出「← 返回列表 / 安装」，不跟内容滚出屏幕。
+
 ### 装之前先看清楚
 
 安装分两步，**中间必须过一道预览**：
@@ -371,6 +394,7 @@ skillsmith/            ← 仓库根就是软件本体
 ├── manifest.js          技能清单容错解析：frontmatter 子集、名字校验、多技能仓库定位
 ├── safety.js            安全扫描：代码风险 + 提示词注入，分级只报告不拦截
 ├── installer.js         安装/卸载：来源解析、预览、落盘、来源记录、纳管
+├── search.js            本地模糊搜索：四字段加权、多词 AND、子序列缩写
 ├── agent-config.js      智能体配置：内置基线 + 用户增删改合并
 ├── settings.js          全局设置：共享技能真源地址
 ├── server.js            HTTP 服务与 API（浏览器版与桌面版共用）
@@ -384,6 +408,7 @@ skillsmith/            ← 仓库根就是软件本体
 │   ├── theme.css        深色主题层（覆盖上游语义类）
 │   ├── desktop-enhance.js  批量工具栏注入
 │   ├── agent-manager.js    智能体管理面板
+│   ├── install-panel.js    安装与搜索面板（本地/在线 tab）
 │   ├── settings-panel.js   路径面包屑 + 设置面板
 │   ├── app-menu.js         应用菜单栏（设置/窗口/帮助/关于）
 │   └── fonts/           离线字体（不依赖 CDN）
@@ -393,14 +418,15 @@ skillsmith/            ← 仓库根就是软件本体
 │   ├── preload.js       最小 API 面
 │   ├── stage.js         打包前把依赖平铺到 app/
 │   └── 启动桌面版.bat
-└── test_*.js            测试（共 179 项）
+└── test_*.js            测试（共 214 项）
 ```
 
 测试分布：
 
 | 文件 | 项数 | 覆盖 |
 |---|---|---|
-| `test_installer.js` | 62 | 来源解析、预览、安装、覆盖、卸载、纳管、三种状态 |
+| `test_installer.js` | 63 | 来源解析、预览、安装、覆盖、卸载、纳管、三种状态 |
+| `test_search.js` | 34 | 加权打分、缩写密度闸、多词 AND 与 OR 回退、缓存失效 |
 | `test_agent_config.js` | 40 | 智能体增删改、账本字段保全 |
 | `test_client_state.js` | 32 | 三种账本格式读写、损坏文件拒写、备份 |
 | `test_safety.js` | 31 | 恶意样本命中 + 真实误报回归 |
@@ -464,6 +490,7 @@ POST /api/agent-config             扩展：{ action: save|remove|reset, agent: 
 GET  /api/settings                 扩展：读取设置（真源地址等）
 POST /api/settings                 扩展：{ action: set-canon-root|rebind, ... }
 
+GET  /api/search?q=&limit=         安装：本地模糊搜索（空 q = 浏览全部）
 GET  /api/installed                安装：已装清单（记录 ∪ 真源实况）
 POST /api/install/preview          安装：{ source, subdir? }       只读，不写盘
 POST /api/install                  安装：{ source, subdir?, overwrite?, expectedCommit?, enableAgents? }

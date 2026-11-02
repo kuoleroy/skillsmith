@@ -44,8 +44,21 @@ function main() {
   for (const f of ['main.js', 'preload.js']) {
     fs.copyFileSync(path.join(__dirname, f), path.join(STAGE, f));
   }
-  // 业务逻辑（与浏览器版共用同一份，避免两套实现漂移）
-  for (const f of ['core.js', 'server.js', 'agent-config.js', 'settings.js']) {
+  // 业务逻辑（与浏览器版共用同一份，避免两套实现漂移）。
+  //
+  // 自动收集根目录的 .js，不写死清单：早先这里是
+  // ['core.js','server.js','agent-config.js','settings.js'] 的白名单，
+  // 后来陆续加了 client-state / manifest / safety / installer / search，
+  // 白名单没跟上 —— 打出来的安装包 require 不到模块，一启动就崩。
+  // 本地跑 npm start 完全正常，只有装到别人机器上才炸，属于最难定位的一类。
+  // 不打包的：测试、CLI 入口、运维脚本（它们靠命令行跑，桌面版用不到）
+  const EXCLUDE = new Set(['skillsmith.js', 'align-ledger.js', 'verify-real-sync.js', 'launcher.js']);
+  const businessFiles = fs.readdirSync(ROOT).filter((f) => (
+    f.endsWith('.js')
+    && !/^test_/.test(f)
+    && !EXCLUDE.has(f)
+  ));
+  for (const f of businessFiles) {
     fs.copyFileSync(path.join(ROOT, f), path.join(STAGE, f));
   }
   // 前端资源与图标

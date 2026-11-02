@@ -49,6 +49,7 @@ const { exec } = require('child_process');
 const core = require('./core');
 const agentConfig = require('./agent-config.js');
 const installer = require('./installer.js');
+const search = require('./search.js');
 
 const HOST = '127.0.0.1';
 const PORT = Number(process.env.SKILLSWITCH_PORT || 17888);
@@ -392,6 +393,19 @@ function createServer(desktop = false) {
       });
     }
 
+    // 本地搜索：搜真源里已有的技能（含 unmanaged / missing 残留）。
+    //
+    // 空 q 返回全部，相当于"浏览清单" —— 前端打开面板时先用它填满列表，
+    // 不必区分"首次加载"和"搜索"两条路径。
+    //
+    // 这里不做分页：本地技能通常几十个，一次返回比翻页体验好。
+    // limit 只是兜底上限，防止异常数据把响应撑爆。
+    if (p === '/api/search' && req.method === 'GET') {
+      const q = url.searchParams.get('q') || '';
+      const limit = Number(url.searchParams.get('limit')) || 50;
+      return sendJson(res, 200, search.searchLocal(q, { limit }));
+    }
+
     if (p === '/api/install/preview' && req.method === 'POST') {
       let body;
       try {
@@ -425,6 +439,7 @@ function createServer(desktop = false) {
           expectedCommit: body.expectedCommit || null,
           enableAgents: body.enableAgents,
         });
+        search.invalidate();   // 新技能立刻可被搜到
         logOp({
           action: 'install',
           source: body.source,
@@ -449,6 +464,7 @@ function createServer(desktop = false) {
       if (!body.name) return sendJson(res, 400, { ok: false, message: '缺少 name' });
       try {
         const r = installer.uninstall(body.name);
+        search.invalidate();
         logOp({ action: 'uninstall', name: body.name });
         return sendJson(res, 200, r);
       } catch (e) {
@@ -465,7 +481,9 @@ function createServer(desktop = false) {
       }
       if (!body.name) return sendJson(res, 400, { ok: false, message: '缺少 name' });
       try {
-        return sendJson(res, 200, installer.adopt(body.name));
+        const r = installer.adopt(body.name);
+        search.invalidate();
+        return sendJson(res, 200, r);
       } catch (e) {
         return sendJson(res, 400, { ok: false, message: e.message });
       }
@@ -509,6 +527,7 @@ function createServer(desktop = false) {
           '</body>',
           '  <script src="/desktop-enhance.js"></script>\n' +
           '  <script src="/agent-manager.js"></script>\n' +
+          '  <script src="/install-panel.js"></script>\n' +
           '  <script src="/settings-panel.js"></script>\n' +
           '  <script src="/app-menu.js"></script>\n  </body>'
         );
