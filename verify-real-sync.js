@@ -105,12 +105,66 @@ function same(a, b) {
   return true;
 }
 
+// ---------------------------------------------------------------- 账本快照
+//
+// 关键：这个脚本会真的改客户端配置。测完必须精确还原，
+// 否则会把用户设的「仅手动调用」（user-invocable-only）清成「开」——
+// 那是用户为了省 token 主动设的状态，不能被测试顺手改掉。
+//
+// 所以测前把每个端、每个候选 key 的原始值记下来，测后逐条写回。
+
+/** 直接读写配置文件里的原始值（不走 client-state 的语义层，要原样复原） */
+function snapshotLedger() {
+  const snap = {};
+  const agents = agentConfig.listAgents();
+  for (const a of agents) {
+    if (!a.statusFile || a.enabled === false || a.unsupported) continue;
+    const file = cs.expandHome(a.statusFile);
+    let raw = null;
+    try { raw = fs.readFileSync(file, 'utf8'); } catch (e) { /* 不存在 */ }
+    snap[a.name] = { file, raw, kind: a.statusKind, key: a.statusKey };
+  }
+  return snap;
+}
+
+/**
+ * 还原账本：把文件内容整个写回原始文本。
+ *
+ * 为什么整文件还原而不是逐 key 修：
+ *   开关过程可能新增/删除 key、改变 JSON 缩进 —— 逐 key 修容易漏。
+ *   直接写回原文本是唯一能保证「字节级一致」的做法。
+ *   如果这个技能本来就在账本里没记录、测完也没记录，写回原文本同样正确。
+ */
+function restoreLedger(snap) {
+  let restored = 0;
+  for (const [agent, s] of Object.entries(snap)) {
+    try {
+      let cur = null;
+      try { cur = fs.readFileSync(s.file, 'utf8'); } catch (e) { /* 可能不存在 */ }
+      if (cur === s.raw) continue;            // 没变过，不碰
+      if (s.raw === null) {
+        // 原本没有这个文件 → 删掉测试创建出来的
+        try { fs.rmSync(s.file, { force: true }); } catch (e) { /* 忽略 */ }
+      } else {
+        fs.writeFileSync(s.file, s.raw, 'utf8');
+      }
+      restored += 1;
+    } catch (e) {
+      console.log(`  ! 还原 ${agent} 失败：${e.message}`);
+    }
+  }
+  return restored;
+}
+
 // ---------------------------------------------------------------- 主流程
 
 console.log('='.repeat(64));
 console.log('真实联通性验证：' + skillName);
 console.log('参与验证的端（有独立账本）：' + LEDGER_AGENTS.join(', '));
 console.log('='.repeat(64));
+
+// 先存原样，最后无论成功失败都还原
+const ledgerSnapshot = snapshotLedger();
 
 const initial = probe();
 console.log('\n[0] 初始状态');
@@ -160,27 +214,32 @@ for (const agent of Object.keys(afterOn)) {
   assertTrue(afterOn[agent].ledgerDisabled === false, agent + ' 账本已无禁用记录');
 }
 
-// ---- 还原校验 ----
-console.log('\n[3] 与初始状态比对');
-const restored = probe();
-if (same(initial, restored)) {
-  console.log('  ✓ 已完全回到初始状态');
+// ---- 还原账本原样 ----
+//
+// 开关过程会清掉「仅手动调用」这类用户设置，必须原样写回。
+// 目录保持「开」是对的（测完技能本就该是开着的），只还原账本。
+console.log('\n[3] 还原客户端账本到测试前原样');
+const restoredN = restoreLedger(ledgerSnapshot);
+if (restoredN) {
+  console.log('  ✓ 已还原 ' + restoredN + ' 个配置文件（含「仅手动调用」等用户设置）');
 } else {
-  console.log('  ! 与初始状态不同（初始就是不均匀状态时会这样，属正常）：');
-  show('当前', restored);
+  console.log('  ✓ 无需还原（测试未改变任何账本）');
 }
 
 // ---- 一致性自检 ----
 console.log('\n[4] 全量一致性自检 verifyLedger()');
 const v = core.verifyLedger();
-console.log('  检查组合:', v.checked, ' 问题:', v.problems.length);
+console.log('  检查组合:', v.checked,
+  ' 真问题:', v.problems.length,
+  ' 仅手动:', v.manualOnly,
+  ' 提醒:', v.notices.length);
 if (!v.ok) {
   for (const p of v.problems.slice(0, 12)) {
-    console.log('    -', p.kind, '|', p.agent + '/' + p.skill);
+    console.log('    ✗', p.kind, '|', p.agent + '/' + p.skill);
   }
 }
 
 console.log('\n' + '='.repeat(64));
-console.log(failures ? `失败 ${failures} 项` : '全部通过：目录与账本同步一致');
+console.log(failures ? `失败 ${failures} 项` : '全部通过：目录与账本同步一致，且原有设置已还原');
 console.log('='.repeat(64));
 process.exit(failures ? 1 : 0);

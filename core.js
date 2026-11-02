@@ -326,12 +326,29 @@ function lastLedgerDetail() {
 }
 
 /**
- * 查询某端某技能是否被客户端账本标记为禁用。
+ * 某端某技能在客户端账本里的三态。
  *
- * 注意：这是「客户端的记账」，不是「目录里有没有」。
- * 两者必须一起看才算真正开了 —— 只有目录、账本还是关的，
- * 客户端照样不加载（这正是过去「还得去客户端再开一遍」的原因）。
+ * 为什么是三态而不是布尔：
+ *   WorkBuddy / Trae 这类客户端支持「仅手动调用」（user-invocable-only）——
+ *   模型不会自动加载它（省 token），但用户 @ 一下仍能用。这是一个**有用的
+ *   正常状态**，不是「关」，也不等于「开」。
+ *
+ *   早先只有开/关两态，于是这种状态被当成「关了但目录还在」的错误，
+ *   自检会一直报假警，反而掩盖真正的问题（账本写的是 off）。
+ *
+ * @returns {'on'|'manual'|'off'} on=完全可用，manual=仅手动，off=关闭
  */
+function ledgerState(cfg, skillName) {
+  if (!cfg.statusFile) return 'on';          // 无账本 = 只看目录
+  const r = clientState.readLedger(cfg, ledgerKeys(skillName));
+  if (!r.disabled) return 'on';
+  // 账本记着禁用，但具体是「仅手动」还是「彻底关」要看写的值
+  const v = String(r.value || '').toLowerCase();
+  if (v === 'user-invocable-only' || v === 'name-only') return 'manual';
+  return 'off';
+}
+
+/** 查询某端某技能是否被客户端账本标记为禁用（含 manual 半开） */
 function statusDisabled(cfg, skillName) {
   if (!cfg.statusFile) return false;
   return clientState.readLedger(cfg, ledgerKeys(skillName)).disabled;
@@ -493,23 +510,24 @@ function snapshot() {
  *   还得去客户端再点一次」。这种不一致是静默的：界面照样显示正常，
  *   只有用户到客户端里看才发现。
  *
- * 判定口径（与客户端实际行为一致）：
- *   · 无账本的端：目录在 = 开
- *   · 有账本的端：目录在 **且** 账本未记禁用 = 开
+ * 判定口径（与客户端实际行为一致，三态）：
  *
- * 只把 `dir-on-ledger-off` 算作真问题：
- *   目录在、账本记着禁用 —— 面板说开，客户端说关，用户被误导。
+ *   目录在 + 账本 on      → 「开」       模型能自动调用
+ *   目录在 + 账本 manual  → 「仅手动」   模型不自动调用，用户 @ 可用（省 token 的正常状态）
+ *   目录在 + 账本 off     → **真问题**   面板说开，客户端当关，用户被误导
+ *   目录不在              → 「关」       两边一致
  *
- * 反过来「目录不在、账本也没有禁用记录」是**一致**的：
- *   两边都是关（客户端扫描不到这个目录，自然不加载）。
- *   这种只是提醒 —— 如果用户以为它是开的，说明目录层没建成功
- *   （常见于真源搬家后链接断了），可以用「重新绑定所有端」修。
+ * 为什么 manual 不算问题：
+ *   「仅手动调用」（user-invocable-only）是用户主动设置的省 token 状态，
+ *   合法且有用。把它当不一致会让自检长期挂着十几条假警，
+ *   真正的问题（账本是 off）反而被淹没。
  *
  * @returns {{
  *   ok: boolean,
  *   checked: number,
- *   problems: Array<{ skill, agent, kind, dirPresent, ledgerDisabled, message }>,
- *   notices: Array<{ skill, agent, kind, dirPresent, ledgerDisabled, message }>
+ *   problems: Array<{ skill, agent, kind, dirPresent, ledgerDisabled, ledgerState, message }>,
+ *   notices: Array<{ skill, agent, kind, dirPresent, ledgerDisabled, ledgerState, message }>,
+ *   manualOnly: number
  * }}
  */
 function verifyLedger() {
@@ -517,6 +535,7 @@ function verifyLedger() {
   const problems = [];
   const notices = [];
   let checked = 0;
+  let manualOnly = 0;
 
   for (const s of skills) {
     for (const [agent, cfg] of Object.entries(AGENTS)) {
@@ -526,33 +545,39 @@ function verifyLedger() {
 
       const p = path.join(cfg.dir, s.name);
       const dirPresent = cfg.mode === 'realdir' ? isRealDir(p) : linksToCanon(p, s.name);
-      const ledgerDisabled = statusDisabled(cfg, s.name);
+      const state = ledgerState(cfg, s.name);
+      const ledgerDisabled = state !== 'on';
 
-      if (dirPresent && ledgerDisabled) {
-        // 真问题：面板说开，客户端读完自己的账本还是关的
+      if (dirPresent && state === 'manual') {
+        // 正常状态：仅手动调用。不计问题，也不提醒
+        manualOnly += 1;
+      } else if (dirPresent && state === 'off') {
+        // 真问题：面板说开，客户端读完账本彻底当它关
         problems.push({
           skill: s.name,
           agent,
           kind: 'dir-on-ledger-off',
           dirPresent,
           ledgerDisabled,
-          message: '目录已就位，但客户端账本仍记着禁用 —— 在客户端里会显示为关闭',
+          ledgerState: state,
+          message: '目录已就位，但客户端账本记为「已关闭」—— 客户端里看不到这个技能',
         });
-      } else if (!dirPresent && !ledgerDisabled && cfg.statusFile) {
-        // 一致（两边都是关），仅提醒：如果用户以为它是开的，是目录层没建成功
+      } else if (!dirPresent && cfg.statusFile) {
+        // 目录不在：两边都是关，一致。只提醒「若期望开启则目录层没建成功」
         notices.push({
           skill: s.name,
           agent,
-          kind: 'dir-off-ledger-on',
+          kind: 'dir-off',
           dirPresent,
           ledgerDisabled,
-          message: '目录里没有该技能，账本也无禁用记录 —— 若期望开启，说明目录层没建成功',
+          ledgerState: state,
+          message: '目录里没有该技能 —— 若期望开启，说明目录层没建成功（可试「重新绑定所有端」）',
         });
       }
     }
   }
 
-  return { ok: problems.length === 0, checked, problems, notices };
+  return { ok: problems.length === 0, checked, problems, notices, manualOnly };
 }
 
 
