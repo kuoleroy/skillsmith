@@ -496,20 +496,26 @@ function snapshot() {
  * 判定口径（与客户端实际行为一致）：
  *   · 无账本的端：目录在 = 开
  *   · 有账本的端：目录在 **且** 账本未记禁用 = 开
- *   所以「目录在但账本禁用」就是不一致 —— 这是最需要暴露的一种。
+ *
+ * 只把 `dir-on-ledger-off` 算作真问题：
+ *   目录在、账本记着禁用 —— 面板说开，客户端说关，用户被误导。
+ *
+ * 反过来「目录不在、账本也没有禁用记录」是**一致**的：
+ *   两边都是关（客户端扫描不到这个目录，自然不加载）。
+ *   这种只是提醒 —— 如果用户以为它是开的，说明目录层没建成功
+ *   （常见于真源搬家后链接断了），可以用「重新绑定所有端」修。
  *
  * @returns {{
  *   ok: boolean,
  *   checked: number,
- *   problems: Array<{
- *     skill: string, agent: string, kind: string,
- *     dirPresent: boolean, ledgerDisabled: boolean, message: string
- *   }>
+ *   problems: Array<{ skill, agent, kind, dirPresent, ledgerDisabled, message }>,
+ *   notices: Array<{ skill, agent, kind, dirPresent, ledgerDisabled, message }>
  * }}
  */
 function verifyLedger() {
   const skills = listSkills();
   const problems = [];
+  const notices = [];
   let checked = 0;
 
   for (const s of skills) {
@@ -523,7 +529,7 @@ function verifyLedger() {
       const ledgerDisabled = statusDisabled(cfg, s.name);
 
       if (dirPresent && ledgerDisabled) {
-        // 最要紧的一种：目录在，客户端却把它当禁用的
+        // 真问题：面板说开，客户端读完自己的账本还是关的
         problems.push({
           skill: s.name,
           agent,
@@ -533,22 +539,20 @@ function verifyLedger() {
           message: '目录已就位，但客户端账本仍记着禁用 —— 在客户端里会显示为关闭',
         });
       } else if (!dirPresent && !ledgerDisabled && cfg.statusFile) {
-        // 目录不在、账本却是「开」的：客户端下次扫描会发现技能不见了。
-        // 不算错（关闭时移除目录本就正常），但如果用户以为是「开」的就会困惑，
-        // 只在账本被显式写成开启时才报。
-        problems.push({
+        // 一致（两边都是关），仅提醒：如果用户以为它是开的，是目录层没建成功
+        notices.push({
           skill: s.name,
           agent,
           kind: 'dir-off-ledger-on',
           dirPresent,
           ledgerDisabled,
-          message: '目录里没有该技能，但账本没有禁用记录 —— 若期望开启，说明目录层没建成功',
+          message: '目录里没有该技能，账本也无禁用记录 —— 若期望开启，说明目录层没建成功',
         });
       }
     }
   }
 
-  return { ok: problems.length === 0, checked, problems };
+  return { ok: problems.length === 0, checked, problems, notices };
 }
 
 
