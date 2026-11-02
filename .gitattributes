@@ -6,6 +6,13 @@
 *.json text eol=lf
 *.ass text eol=lf
 
+# Windows 批处理必须以 CRLF 提交。
+# cmd.exe 对 LF 换行的 .bat 容错有限：标签跳转（goto :label）和
+# 多行括号块会解析异常，clone 下来双击就没反应。
+# 这个仓库会被别人 clone 到别的机器，所以行尾必须钉死。
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
 *.png binary
 *.jpg binary
 *.jpeg binary
